@@ -18,7 +18,8 @@ package io.gatling.recorder.cli
 import io.gatling.core.cli.GatlingOptionParser
 import io.gatling.recorder.ConfigOverrides
 import io.gatling.recorder.cli.CommandLineConstants._
-import io.gatling.recorder.config.RecorderPropertiesBuilder
+import io.gatling.recorder.config.{RecorderMode, RecorderPropertiesBuilder}
+import io.gatling.recorder.controller.RecorderController
 
 private[recorder] class ArgsParser(args: Array[String]) {
 
@@ -84,6 +85,19 @@ private[recorder] class ArgsParser(args: Array[String]) {
     opt[Boolean](InferHtmlResources)
       .foreach(props.inferHtmlResources)
       .text("""Sets the "Fetch html resources" option to true""")
+
+    opt[String](Mode)
+      .foreach(m => props.mode(RecorderMode(m)))
+      .text("The Recorder mode to use (either Proxy or Har)")
+
+    opt[Boolean](Headless)
+      .foreach(props.headless)
+      .text("Run the Recorder in headless mode")
+
+    opt[String](HarFilePath)
+      .foreach(props.harFilePath)
+      .valueName("<HarFilePath>")
+      .text("The path of the HAR file to convert")
   }
 
   def parseArguments: Option[ConfigOverrides] =
