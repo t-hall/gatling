@@ -23,6 +23,7 @@ import io.gatling.core.session._
 case class JmsRequestBuilderBase(requestName: String) {
 
   def reqreply = JmsRequestBuilderQueue(requestName, JmsReqReplyActionBuilder)
+  def reqOnly = JmsRequestBuilderQueue(requestName, JmsReqOnlyActionBuilder)
 }
 
 case class JmsRequestBuilderQueue(requestName: String,
