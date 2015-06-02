@@ -14,80 +14,37 @@
  * limitations under the License.
  */
 package io.gatling.jms
+import io.gatling.core.Predef._
 
-import io.gatling.core.result.writer.DataWriters
-
-import scala.util.control.NonFatal
-
-import java.util.concurrent.atomic.AtomicBoolean
-
-import javax.jms.Message
-import akka.actor.{ Props, ActorRef }
+import akka.actor.{ ActorRef, Props }
 import io.gatling.core.action.{ Failable, Interruptable }
+import io.gatling.core.result.writer.DataWriters
+import io.gatling.core.session.{ Expression, Session }
 import io.gatling.core.util.TimeHelper.nowMillis
 import io.gatling.core.validation.Validation
-import io.gatling.core.session.Session
 import io.gatling.jms.client.JmsClient
 
-object JmsReqReplyAction {
+object JmsReqOnlyAction {
   val BlockingReceiveReturnedNull = new Exception("Blocking receive returned null. Possibly the consumer was closed.")
 
   def props(attributes: JmsAttributes, protocol: JmsProtocol, tracker: ActorRef, dataWriters: DataWriters, next: ActorRef) =
-    Props(new JmsReqReplyAction(attributes, protocol, tracker, dataWriters, next))
+    Props(new JmsReqOnlyAction(attributes, protocol, tracker, dataWriters, next))
 }
 
 /**
- * Core JMS Action to handle Request-Reply semantics
+ * Core JMS Action to handle Request semantics
  * <p>
  * This handles the core "send"ing of messages. Gatling calls the execute method to trigger a send.
  * This implementation then forwards it on to a tracking actor.
  */
-class JmsReqReplyAction(attributes: JmsAttributes, protocol: JmsProtocol, tracker: ActorRef, val dataWriters: DataWriters, val next: ActorRef)
+class JmsReqOnlyAction(attributes: JmsAttributes, protocol: JmsProtocol, tracker: ActorRef, val dataWriters: DataWriters, val next: ActorRef)
     extends Interruptable with Failable with JmsAction {
-
-  import JmsReqReplyAction._
 
   // Create a client to refer to
   val client = JmsClient(protocol, attributes.destination, attributes.replyDestination)
-
-  val receiveTimeout = protocol.receiveTimeout.getOrElse(0L)
   val messageMatcher = protocol.messageMatcher
 
-  class ListenerThread(val continue: AtomicBoolean = new AtomicBoolean(true)) extends Thread(new Runnable {
-    def run(): Unit = {
-      val replyConsumer = client.createReplyConsumer(attributes.selector.orNull)
-      try {
-        while (continue.get) {
-          val m = replyConsumer.receive(receiveTimeout)
-          m match {
-            case msg: Message =>
-              tracker ! MessageReceived(messageMatcher.responseID(msg), nowMillis, msg)
-              logMessage(s"Message received ${msg.getJMSMessageID}", msg)
-            case _ =>
-              throw BlockingReceiveReturnedNull
-          }
-        }
-      } catch {
-        // when we close, receive can throw exception
-        case NonFatal(e) => logger.error(e.getMessage)
-      } finally {
-        replyConsumer.close()
-      }
-    }
-  }) {
-    def close() = {
-      continue.set(false)
-      interrupt()
-      join()
-    }
-  }
-
-  val listenerThreads = (1 to protocol.listenerCount).map(_ => new ListenerThread)
-
-  listenerThreads.foreach(_.start)
-
   override def postStop(): Unit = {
-    listenerThreads.foreach(_.close())
     client.close()
   }
 
@@ -114,7 +71,9 @@ class JmsReqReplyAction(attributes: JmsAttributes, protocol: JmsProtocol, tracke
     msg.map { msg =>
       // notify the tracker that a message was sent
       tracker ! MessageSent(messageMatcher.requestID(msg), start, nowMillis, attributes.checks, session, next, attributes.requestName)
+      tracker ! MessageReceived(messageMatcher.requestID(msg), nowMillis, msg)
       logMessage(s"Message sent ${msg.getJMSMessageID}", msg)
     }
   }
+
 }
