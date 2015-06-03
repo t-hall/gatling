@@ -17,16 +17,16 @@ package io.gatling.http.cache
 
 import java.nio.charset.StandardCharsets._
 
-import com.ning.http.client.uri.Uri
-import com.ning.http.client._
-
 import io.gatling.BaseSpec
-import io.gatling.core.result.message.ResponseTimings
 import io.gatling.core.session.Session
-import io.gatling.http.ahc.HttpEngine
 import io.gatling.core.config.GatlingConfiguration
+import io.gatling.http.ahc.HttpEngine
+import io.gatling.core.stats.message.ResponseTimings
 import io.gatling.http.{ MockUtils, HeaderNames, HeaderValues }
 import io.gatling.http.response.{ HttpResponse, ResponseBody }
+
+import org.asynchttpclient._
+import org.asynchttpclient.uri.Uri
 
 class CacheSupportSpec extends BaseSpec {
 
@@ -100,7 +100,7 @@ class CacheSupportSpec extends BaseSpec {
   }
 
   class RedirectContext {
-    var session = Session("mockSession", "mockUserName")
+    var session = Session("mockSession", 0)
 
     def addRedirect(from: String, to: String): Unit =
       session = httpCaches.addRedirect(session, Uri.create(from), Uri.create(to))

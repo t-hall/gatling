@@ -15,19 +15,22 @@
  */
 package io.gatling.core.structure
 
-import akka.actor.ActorRef
+import io.gatling.core.stats.StatsEngine
 
+import akka.actor.ActorRef
 import io.gatling.AkkaSpec
-import io.gatling.core.CoreModule
+import io.gatling.core.{ CoreComponents, CoreDsl }
+import io.gatling.core.controller.throttle.Throttler
 import io.gatling.core.pause.Constant
-import io.gatling.core.result.writer.DataWriters
-import io.gatling.core.config.{ GatlingConfiguration, Protocols }
+import io.gatling.core.protocol.{ Protocols, ProtocolComponentsRegistry }
+import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session.Session
 
-class ExecsSpec extends AkkaSpec with CoreModule {
+class ExecsSpec extends AkkaSpec with CoreDsl {
 
   implicit val configuration = GatlingConfiguration.loadForTest()
-  val ctx = ScenarioContext(mock[ActorRef], mock[DataWriters], mock[ActorRef], Protocols(), Constant, throttled = false)
+  val coreComponents = CoreComponents(mock[ActorRef], mock[Throttler], mock[StatsEngine], mock[ActorRef])
+  val ctx = ScenarioContext(coreComponents, Constant, throttled = false)
 
   "Execs" should "wrap Scenarios in chains, using exec" in {
 
@@ -46,8 +49,8 @@ class ExecsSpec extends AkkaSpec with CoreModule {
         session
       }
 
-    val chain = chainBuilder.build(system, self, ctx)
-    val session = Session("TestScenario", "testUser")
+    val chain = chainBuilder.build(system, ctx, new ProtocolComponentsRegistry(system, coreComponents, mock[Protocols]), self)
+    val session = Session("TestScenario", 0)
     chain ! session
     /*
      * We're cheating slightly by assuming messages will be delivered

@@ -18,13 +18,19 @@ package io.gatling.http.ahc
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
 
-import com.ning.http.client.providers.netty.request.NettyRequest
-import com.ning.http.client.{ AsyncHandlerExtensions, HttpResponseBodyPart, HttpResponseHeaders, HttpResponseStatus, ProgressAsyncHandler }
-import com.ning.http.client.AsyncHandler.STATE
-import com.ning.http.client.AsyncHandler.STATE.CONTINUE
-import com.typesafe.scalalogging.StrictLogging
+import org.asynchttpclient.netty.request.NettyRequest
+import org.asynchttpclient._
+import org.asynchttpclient.handler._
+import org.asynchttpclient.AsyncHandler.State
+import org.asynchttpclient.AsyncHandler.State._
+import com.typesafe.scalalogging._
 
 import scala.util.control.NonFatal
+
+object AsyncHandler extends StrictLogging {
+  val DebugEnabled = logger.underlying.isDebugEnabled
+  val InfoEnabled = logger.underlying.isInfoEnabled
+}
 
 /**
  * This class is the AsyncHandler that AsyncHttpClient needs to process a request's response
@@ -35,7 +41,7 @@ import scala.util.control.NonFatal
  * @param tx the data about the request to be sent and processed
  * @param httpEngine the HTTP engine
  */
-class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHandler[Unit] with AsyncHandlerExtensions with StrictLogging {
+class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHandler[Unit] with AsyncHandlerExtensions with LazyLogging {
 
   val responseBuilder = tx.responseBuilderFactory(tx.request.ahcRequest)
   private val init = new AtomicBoolean
@@ -43,7 +49,7 @@ class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHand
 
   private def start(): Unit =
     if (init.compareAndSet(false, true)) {
-      httpEngine.dataWriters.logRequest(tx.session, tx.request.requestName)
+      httpEngine.coreComponents.statsEngine.logRequest(tx.session, tx.request.requestName)
       responseBuilder.updateFirstByteSent()
     }
 
@@ -62,7 +68,7 @@ class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHand
 
   override def onSendRequest(request: Any): Unit = {
     start()
-    if (logger.underlying.isDebugEnabled)
+    if (AsyncHandler.DebugEnabled)
       responseBuilder.setNettyRequest(request.asInstanceOf[NettyRequest])
   }
 
@@ -70,29 +76,29 @@ class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHand
     if (!done.get) responseBuilder.reset()
     else logger.error("onRetry is not supposed to be called once done, please report")
 
-  override def onHeaderWriteCompleted: STATE = {
+  override def onHeaderWriteCompleted: State = {
     if (!done.get) responseBuilder.updateLastByteSent()
     CONTINUE
   }
 
-  override def onContentWriteCompleted: STATE = {
+  override def onContentWriteCompleted: State = {
     if (!done.get) responseBuilder.updateLastByteSent()
     CONTINUE
   }
 
   override def onContentWriteProgress(amount: Long, current: Long, total: Long) = CONTINUE
 
-  override def onStatusReceived(status: HttpResponseStatus): STATE = {
+  override def onStatusReceived(status: HttpResponseStatus): State = {
     if (!done.get) responseBuilder.accumulate(status)
     CONTINUE
   }
 
-  override def onHeadersReceived(headers: HttpResponseHeaders): STATE = {
+  override def onHeadersReceived(headers: HttpResponseHeaders): State = {
     if (!done.get) responseBuilder.accumulate(headers)
     CONTINUE
   }
 
-  override def onBodyPartReceived(bodyPart: HttpResponseBodyPart): STATE = {
+  override def onBodyPartReceived(bodyPart: HttpResponseBodyPart): State = {
     if (!done.get) responseBuilder.accumulate(bodyPart)
     CONTINUE
   }
@@ -116,9 +122,9 @@ class AsyncHandler(tx: HttpTx, httpEngine: HttpEngine) extends ProgressAsyncHand
       case m    => s"$className: $m"
     }
 
-    if (logger.underlying.isDebugEnabled)
+    if (AsyncHandler.DebugEnabled)
       logger.debug(s"Request '${tx.request.requestName}' failed for user ${tx.session.userId}", throwable)
-    else
+    else if (AsyncHandler.InfoEnabled)
       logger.info(s"Request '${tx.request.requestName}' failed for user ${tx.session.userId}: $errorMessage")
 
     httpEngine.asyncHandlerActors ! OnThrowable(tx, responseBuilder.build, errorMessage)

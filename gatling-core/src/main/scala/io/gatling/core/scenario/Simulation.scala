@@ -15,28 +15,28 @@
  */
 package io.gatling.core.scenario
 
-import akka.actor.{ ActorSystem, ActorRef }
-import io.gatling.core.result.writer.DataWriters
-
 import scala.concurrent.duration.{ Duration, FiniteDuration }
 
+import akka.actor.ActorSystem
+import io.gatling.core.CoreComponents
 import io.gatling.core.assertion.Assertion
-import io.gatling.core.config.{ Protocols, GatlingConfiguration, Protocol }
-import io.gatling.core.controller.throttle.{ ThrottlingProfile, Throttling }
+import io.gatling.core.config.GatlingConfiguration
+import io.gatling.core.controller.throttle.{ ThrottleStep, Throttling }
 import io.gatling.core.pause.{ Constant, Custom, Disabled, Exponential, PauseType, UniformDuration, UniformPercentage }
+import io.gatling.core.protocol.{ ProtocolComponentsRegistry, Protocols, Protocol }
 import io.gatling.core.session.Expression
 import io.gatling.core.structure.PopulationBuilder
 
 abstract class Simulation {
 
-  private[core] var _populationBuilders: List[PopulationBuilder] = Nil
+  private var _populationBuilders: List[PopulationBuilder] = Nil
   private var _globalProtocols: Protocols = Protocols()
-  private[core] var _assertions = Seq.empty[Assertion]
+  private var _assertions = Seq.empty[Assertion]
   private var _maxDuration: Option[FiniteDuration] = None
   private var _globalPauseType: PauseType = Constant
-  private var _globalThrottling: Option[ThrottlingProfile] = None
-  private[core] var _beforeSteps: List[() => Unit] = Nil
-  private[core] var _afterSteps: List[() => Unit] = Nil
+  private var _globalThrottling: Option[Throttling] = None
+  private var _beforeSteps: List[() => Unit] = Nil
+  private var _afterSteps: List[() => Unit] = Nil
 
   def before(step: => Unit): Unit =
     _beforeSteps = _beforeSteps ::: List(() => step)
@@ -74,13 +74,10 @@ abstract class Simulation {
       this
     }
 
-    def throttle(throttlingBuilders: Throttling*): SetUp = throttle(throttlingBuilders.toIterable)
+    def throttle(throttleSteps: ThrottleStep*): SetUp = throttle(throttleSteps.toIterable)
 
-    def throttle(throttlingBuilders: Iterable[Throttling]): SetUp = {
-
-      val steps = throttlingBuilders.toList.map(_.steps).reverse.flatten
-      val throttling = Throttling(steps).profile
-      _globalThrottling = Some(throttling)
+    def throttle(throttleSteps: Iterable[ThrottleStep]): SetUp = {
+      _globalThrottling = Some(Throttling(throttleSteps))
       this
     }
 
@@ -96,16 +93,14 @@ abstract class Simulation {
     }
   }
 
-  private[core] def build(system: ActorSystem, controller: ActorRef, dataWriters: DataWriters, userEnd: ActorRef)(implicit configuration: GatlingConfiguration): SimulationDef = {
+  private[gatling] def params = {
 
     require(_populationBuilders.nonEmpty, "No scenario set up")
     val duplicates = _populationBuilders.groupBy(_.scenarioBuilder.name).collect { case (name, scns) if scns.size > 1 => name }
     require(duplicates.isEmpty, s"Scenario names must be unique but found duplicates: $duplicates")
     _populationBuilders.foreach(scn => require(scn.scenarioBuilder.actionBuilders.nonEmpty, s"Scenario ${scn.scenarioBuilder.name} is empty"))
 
-    val scenarios = _populationBuilders.map(_.build(system, controller, dataWriters, userEnd, _globalProtocols, _globalPauseType, _globalThrottling))
-
-    val scenarioThrottlings: Map[String, ThrottlingProfile] = _populationBuilders
+    val scenarioThrottlings: Map[String, Throttling] = _populationBuilders
       .flatMap(scn => scn.scenarioThrottling.map(t => scn.scenarioBuilder.name -> t)).toMap
 
     val maxDuration = {
@@ -119,18 +114,34 @@ abstract class Simulation {
       }
     }
 
-    SimulationDef(getClass.getName,
-      scenarios,
-      _assertions,
-      maxDuration,
+    SimulationParams(getClass.getName,
+      _populationBuilders,
+      _globalProtocols,
+      _globalPauseType,
       _globalThrottling,
-      scenarioThrottlings)
+      scenarioThrottlings,
+      maxDuration,
+      _assertions,
+      _beforeSteps,
+      _afterSteps)
   }
 }
 
-case class SimulationDef(name: String,
-                         scenarios: List[Scenario],
-                         assertions: Seq[Assertion],
-                         maxDuration: Option[FiniteDuration],
-                         globalThrottling: Option[ThrottlingProfile],
-                         scenarioThrottlings: Map[String, ThrottlingProfile])
+case class SimulationParams(name: String,
+                            populationBuilders: List[PopulationBuilder],
+                            globalProtocols: Protocols,
+                            globalPauseType: PauseType,
+                            globalThrottling: Option[Throttling],
+                            scenarioThrottlings: Map[String, Throttling],
+                            maxDuration: Option[FiniteDuration],
+                            assertions: Seq[Assertion],
+                            beforeSteps: List[() => Unit],
+                            afterSteps: List[() => Unit]) {
+
+  def scenarios(system: ActorSystem, coreComponents: CoreComponents)(implicit configuration: GatlingConfiguration): List[Scenario] = {
+
+    val protocolComponentsRegistry = new ProtocolComponentsRegistry(system, coreComponents, globalProtocols)
+
+    populationBuilders.map(_.build(system, coreComponents, protocolComponentsRegistry, globalProtocols, globalPauseType, globalThrottling))
+  }
+}

@@ -22,24 +22,23 @@ import scala.collection.mutable
 import org.mockito.Mockito._
 
 import io.gatling.BaseSpec
-import io.gatling.core.{ ValidationValues, CoreModule }
+import io.gatling.core.{ ValidationValues, CoreDsl }
 import io.gatling.core.check.CheckResult
 import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session._
-import io.gatling.http.HttpModule
+import io.gatling.http.HttpDsl
 import io.gatling.http.check.HttpCheckSupport
 import io.gatling.http.response.{ StringResponseBody, Response }
 
-class HttpBodyRegexCheckSpec extends BaseSpec with ValidationValues with CoreModule with HttpModule {
+class HttpBodyRegexCheckSpec extends BaseSpec with ValidationValues with CoreDsl with HttpDsl {
 
-  // FIXME
   object RegexSupport extends HttpCheckSupport
   val regexCheck = RegexSupport.regex _
 
   implicit val configuration = GatlingConfiguration.loadForTest()
 
   implicit def cache: mutable.Map[Any, Any] = mutable.Map.empty
-  val session = Session("mockSession", "mockUserName")
+  val session = Session("mockSession", 0)
 
   private def mockResponse(body: String) = {
     val response = mock[Response]

@@ -22,7 +22,7 @@ import com.typesafe.scalalogging.StrictLogging
 
 import akka.actor.{ ActorSystem, ActorRef }
 import io.gatling.core.action.Switch
-import io.gatling.core.config.Protocol
+import io.gatling.core.protocol.ProtocolComponentsRegistry
 import io.gatling.core.session.Expression
 import io.gatling.core.structure.{ ScenarioContext, ChainBuilder }
 import io.gatling.core.validation.SuccessWrapper
@@ -52,15 +52,15 @@ class RandomSwitchBuilder(possibilities: List[(Int, ChainBuilder)], elseNext: Op
   if (sum == Accuracy && elseNext.isDefined)
     logger.warn("Random switch has a 100% sum, yet a else is defined?!")
 
-  def build(system: ActorSystem, next: ActorRef, ctx: ScenarioContext) = {
+  def build(system: ActorSystem, ctx: ScenarioContext, protocolComponentsRegistry: ProtocolComponentsRegistry, next: ActorRef) = {
 
     val possibleActions = possibilities.map {
       case (percentage, possibility) =>
-        val possibilityAction = possibility.build(system, next, ctx)
+        val possibilityAction = possibility.build(system, ctx, protocolComponentsRegistry, next)
         (percentage, possibilityAction)
     }
 
-    val elseNextActor = elseNext.map(_.build(system, next, ctx)).getOrElse(next)
+    val elseNextActor = elseNext.map(_.build(system, ctx, protocolComponentsRegistry, next)).getOrElse(next)
 
     val nextAction: Expression[ActorRef] = _ => {
 
@@ -76,12 +76,6 @@ class RandomSwitchBuilder(possibilities: List[(Int, ChainBuilder)], elseNext: Op
 
       determineNextAction(randomWithinAccuracy, possibleActions).success
     }
-    system.actorOf(Switch.props(nextAction, ctx.dataWriters, next), actorName("randomSwitch"))
-  }
-
-  override def defaultProtocols: Set[Protocol] = {
-
-    val actionBuilders = possibilities.flatMap { case (_, chainBuilder) => chainBuilder.actionBuilders } ::: elseNext.map(_.actionBuilders).getOrElse(Nil)
-    actionBuilders.flatMap(_.defaultProtocols).toSet
+    system.actorOf(Switch.props(nextAction, ctx.coreComponents.statsEngine, next), actorName("randomSwitch"))
   }
 }

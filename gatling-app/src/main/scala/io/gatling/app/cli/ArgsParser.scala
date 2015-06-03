@@ -15,9 +15,9 @@
  */
 package io.gatling.app.cli
 
-import io.gatling.app.{ ConfigOverrides, GatlingStatusCodes }
+import io.gatling.app.ConfigOverrides
 import io.gatling.app.cli.CommandLineConstants._
-import io.gatling.core.cli.{ GatlingOptionParser, StatusCode }
+import io.gatling.core.cli.GatlingOptionParser
 import io.gatling.core.config.GatlingPropertiesBuilder
 
 private[app] class ArgsParser(args: Array[String]) {
@@ -62,7 +62,7 @@ private[app] class ArgsParser(args: Array[String]) {
       .text("Uses <directoryPath> to discover simulations that could be run")
 
     opt[String](BinariesFolder)
-      .foreach(props.sourcesDirectory)
+      .foreach(props.binariesDirectory)
       .valueName("<directoryPath>")
       .text("Uses <directoryPath> as the absolute path of the directory where Gatling should produce compiled binaries")
 
@@ -84,5 +84,5 @@ private[app] class ArgsParser(args: Array[String]) {
 
   def parseArguments: Either[ConfigOverrides, StatusCode] =
     if (cliOptsParser.parse(args)) Left(props.build)
-    else Right(GatlingStatusCodes.InvalidArguments)
+    else Right(StatusCode.InvalidArguments)
 }

@@ -18,16 +18,16 @@ package io.gatling.charts.component
 import com.dongxiguo.fastring.Fastring.Implicits._
 
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.reader.DataReader.NoPlotMagicValue
+import io.gatling.core.stats.reader.DataReader
 import io.gatling.core.util.NumberHelper._
 import io.gatling.core.util.StringHelper.EmptyFastring
 
 private[charts] object Statistics {
   def printable[T: Numeric](value: T) =
     value match {
-      case NoPlotMagicValue     => "-"
-      case (_: Int) | (_: Long) => value.toString
-      case _                    => implicitly[Numeric[T]].toDouble(value).toPrintableString
+      case DataReader.NoPlotMagicValue => "-"
+      case (_: Int) | (_: Long)        => value.toString
+      case _                           => implicitly[Numeric[T]].toDouble(value).toPrintableString
     }
 }
 
@@ -35,7 +35,9 @@ private[charts] case class Statistics[T: Numeric](name: String, total: T, succes
   def all = List(total, success, failure)
 }
 
-private[charts] case class GroupedCount(name: String, count: Int, percentage: Int)
+private[charts] case class GroupedCount(name: String, count: Int, total: Int) {
+  val percentage: Int = if (total == 0) 0 else math.round(count.toDouble / total * 100).toInt
+}
 
 private[charts] case class RequestStatistics(name: String,
                                              path: String,

@@ -18,17 +18,16 @@ package io.gatling.http.response
 import java.net.InetAddress
 import java.nio.charset.Charset
 
-import com.ning.http.client.providers.netty.request.NettyRequest
-import com.ning.http.client.uri.Uri
-import io.gatling.core.result.message.ResponseTimings
-import io.gatling.http.config.HttpProtocol
-
 import scala.collection.JavaConversions.asScalaBuffer
 
-import com.ning.http.client.{ FluentCaseInsensitiveStringsMap, HttpResponseStatus, Request => AHCRequest }
-import com.ning.http.client.cookie.{ Cookie, CookieDecoder }
+import org.asynchttpclient.cookie.{ Cookie, CookieDecoder }
+import org.asynchttpclient.netty.request.NettyRequest
+import org.asynchttpclient.{ FluentCaseInsensitiveStringsMap, HttpResponseStatus, Request => AHCRequest }
+import org.asynchttpclient.uri.Uri
 
+import io.gatling.core.stats.message.ResponseTimings
 import io.gatling.http.HeaderNames
+import io.gatling.http.protocol.HttpProtocol
 import io.gatling.http.util.HttpHelper
 
 abstract class Response {

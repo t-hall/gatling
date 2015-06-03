@@ -18,17 +18,18 @@ package io.gatling.http.request
 import java.io.File
 import java.nio.charset.Charset
 
-import com.ning.http.client.multipart.{ ByteArrayPart, FilePart, Part, PartBase, StringPart }
 import io.gatling.core.body.{ ElFileBodies, RawFileBodies }
 import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session._
 import io.gatling.core.util.Io._
 import io.gatling.core.validation.Validation
 
+import org.asynchttpclient.request.body.multipart.{ ByteArrayPart, FilePart, Part, PartBase, StringPart }
+
 object BodyPart {
 
   def rawFileBodyPart(name: Option[Expression[String]], filePath: Expression[String])(implicit configuration: GatlingConfiguration, rawFileBodies: RawFileBodies): BodyPart =
-    fileBodyPart(name, rawFileBodies.asFile(filePath))
+    byteArrayBodyPart(name, rawFileBodies.asBytes(filePath)).fileName(rawFileBodies.asFile(filePath).map(_.getName))
 
   def elFileBodyPart(name: Option[Expression[String]], filePath: Expression[String])(implicit configuration: GatlingConfiguration, elFileBodies: ElFileBodies): BodyPart =
     stringBodyPart(name, elFileBodies.asString(filePath))
@@ -37,8 +38,6 @@ object BodyPart {
     BodyPart(name, stringBodyPartBuilder(string), BodyPartAttributes(charset = Some(configuration.core.charset)))
 
   def byteArrayBodyPart(name: Option[Expression[String]], bytes: Expression[Array[Byte]]): BodyPart = BodyPart(name, byteArrayBodyPartBuilder(bytes), BodyPartAttributes())
-
-  def fileBodyPart(name: Option[Expression[String]], file: Expression[File]): BodyPart = BodyPart(name, fileBodyPartBuilder(file), BodyPartAttributes())
 
   private def stringBodyPartBuilder(string: Expression[String])(name: String, contentType: Option[String], charset: Option[Charset], fileName: Option[String], contentId: Option[String], transferEncoding: Option[String]): Expression[PartBase] =
     fileName match {
@@ -61,12 +60,16 @@ object BodyPart {
 }
 
 case class BodyPartAttributes(
-  contentType: Option[Expression[String]] = None,
-  charset: Option[Charset] = None,
-  dispositionType: Option[Expression[String]] = None,
-  fileName: Option[Expression[String]] = None,
-  contentId: Option[Expression[String]] = None,
-  transferEncoding: Option[String] = None)
+    contentType: Option[Expression[String]] = None,
+    charset: Option[Charset] = None,
+    dispositionType: Option[Expression[String]] = None,
+    fileName: Option[Expression[String]] = None,
+    contentId: Option[Expression[String]] = None,
+    transferEncoding: Option[String] = None,
+    customHeaders: List[(String, Expression[String])] = Nil) {
+
+  lazy val customHeadersExpression: Expression[Seq[(String, String)]] = resolveIterable(customHeaders)
+}
 
 case class BodyPart(
     name: Option[Expression[String]],
@@ -79,6 +82,7 @@ case class BodyPart(
   def fileName(fileName: Expression[String]) = copy(attributes = attributes.copy(fileName = Some(fileName)))
   def contentId(contentId: Expression[String]) = copy(attributes = attributes.copy(contentId = Some(contentId)))
   def transferEncoding(transferEncoding: String) = copy(attributes = attributes.copy(transferEncoding = Some(transferEncoding)))
+  def header(name: String, value: Expression[String]) = copy(attributes = attributes.copy(customHeaders = attributes.customHeaders ::: List(name -> value)))
 
   def toMultiPart(session: Session): Validation[Part] =
     for {
@@ -88,8 +92,11 @@ case class BodyPart(
       fileName <- resolveOptionalExpression(attributes.fileName, session)
       contentId <- resolveOptionalExpression(attributes.contentId, session)
       part <- partBuilder(name.orNull, contentType, attributes.charset, fileName, contentId, attributes.transferEncoding)(session)
+      customHeaders <- attributes.customHeadersExpression(session)
+
     } yield {
       dispositionType.foreach(part.setDispositionType)
+      customHeaders.foreach { case (name, value) => part.addCustomHeader(name, value) }
       part
     }
 }

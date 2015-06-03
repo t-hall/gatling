@@ -15,28 +15,30 @@
  */
 package io.gatling.core.controller
 
-import java.util.UUID.randomUUID
-
-import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.util.{ Failure, Success, Try }
+
+import io.gatling.core.controller.throttle.Throttler
+import io.gatling.core.stats.StatsEngine
+import io.gatling.core.stats.message.{ End, Start }
+import io.gatling.core.stats.writer.UserMessage
 
 import com.typesafe.scalalogging.StrictLogging
 
 import akka.actor.Props
 
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.message.{ End, Start }
-import io.gatling.core.result.writer.{ DataWriters, UserMessage }
-import io.gatling.core.runner.Selection
 import io.gatling.core.util.TimeHelper.nowMillis
 
 object Controller extends StrictLogging {
-  def props(selection: Selection, dataWriters: DataWriters, configuration: GatlingConfiguration) =
-    Props(new Controller(selection, dataWriters, configuration))
+
+  val ControllerActorName = "gatling-controller"
+
+  def props(statsEngine: StatsEngine, throttler: Throttler, configuration: GatlingConfiguration) =
+    Props(new Controller(statsEngine, throttler, configuration))
 }
 
-class Controller(selection: Selection, dataWriters: DataWriters, configuration: GatlingConfiguration)
+class Controller(statsEngine: StatsEngine, throttler: Throttler, configuration: GatlingConfiguration)
     extends ControllerFSM {
 
   startWith(WaitingToStart, NoData)
@@ -44,48 +46,38 @@ class Controller(selection: Selection, dataWriters: DataWriters, configuration: 
   // -- STEP 1 :  Waiting for the Runner to start the Controller -- //
 
   when(WaitingToStart) {
-    case Event(Run(simulationDef), NoData) =>
-      val initData = InitData(sender(), simulationDef)
+    case Event(Run(scenarios, simulationParams), NoData) =>
+      val initData = InitData(sender(), scenarios, simulationParams)
       processInitializationResult(initData)
   }
 
   // -- STEP 2 : Waiting for DataWriters to be initialized and confirm initialization -- //
 
   private def processInitializationResult(initData: InitData): State = {
-      def buildUserStreams: Map[String, UserStream] = {
-        initData.simulationDef.scenarios.foldLeft((Map.empty[String, UserStream], 0)) { (streamsAndOffset, scenario) =>
-          val (streams, offset) = streamsAndOffset
-
-          val stream = scenario.injectionProfile.allUsers.zipWithIndex
-          val userStream = UserStream(scenario, offset, stream)
-
-          (streams + (scenario.name -> userStream), offset + scenario.injectionProfile.users)
-        }._1
-      }
+      def buildUserStreams: Map[String, UserStream] =
+        initData.scenarios.map(scenario => scenario.name -> UserStream(scenario, scenario.injectionProfile.allUsers)).toMap
 
       def setUpSimulationMaxDuration(): Unit =
-        initData.simulationDef.maxDuration.foreach { maxDuration =>
+        initData.simulationParams.maxDuration.foreach { maxDuration =>
           logger.debug("Setting up max duration")
           setTimer("maxDurationTimer", ForceTermination(), maxDuration)
         }
 
-      def startUpScenarios(userIdRoot: String, userStreams: Map[String, UserStream]): BatchScheduler = {
-        val scheduler = new BatchScheduler(userIdRoot, nowMillis, 10 seconds, self)
+      def startUpScenarios(userStreams: Map[String, UserStream]): BatchScheduler = {
+        val scheduler = new BatchScheduler(nowMillis, 10 seconds, self)
 
         logger.debug("Launching All Scenarios")
         userStreams.values.foreach(scheduler.scheduleUserStream(system, _))
         logger.debug("Finished Launching scenarios executions")
 
-        setUpSimulationMaxDuration()
-
         scheduler
       }
 
-    val userIdRoot = math.abs(randomUUID.getMostSignificantBits) + "-"
     val userStreams = buildUserStreams
-    val batchScheduler = startUpScenarios(userIdRoot, userStreams)
-    val totalUsers = initData.simulationDef.scenarios.map(_.injectionProfile.users).sum
-    goto(Running) using new RunData(initData, userStreams, batchScheduler, mutable.Map.empty, 0, totalUsers)
+    throttler.start()
+    val batchScheduler = startUpScenarios(userStreams)
+    setUpSimulationMaxDuration()
+    goto(Running) using new RunData(initData, userStreams, batchScheduler, 0L, Long.MinValue)
   }
 
   // -- STEP 3 : The Controller and Data Writers are fully initialized, Simulation is now running -- //
@@ -99,24 +91,26 @@ class Controller(selection: Selection, dataWriters: DataWriters, configuration: 
       stay()
 
     case Event(ForceTermination(exception), runData: RunData) =>
-      endAllRemainingUsers(runData)
-      terminateDataWritersAndWaitForConfirmation(runData.initData, exception)
+      terminateStatsEngineAndWaitForConfirmation(runData.initData, exception)
   }
 
   private def processUserMessage(userMessage: UserMessage, runData: RunData): State = {
       def startNewUser: State = {
-        runData.activeUsers += (userMessage.session.userId -> userMessage)
         logger.info(s"Start user #${userMessage.session.userId}")
-        dataWriters ! userMessage
+        statsEngine.logUser(userMessage)
         stay()
       }
 
       def endUserAndTerminateIfLast: State = {
-        runData.activeUsers -= userMessage.session.userId
         runData.completedUsersCount += 1
         dispatchUserEndToDataWriter(userMessage)
-        if (runData.completedUsersCount == runData.totalUsers)
-          terminateDataWritersAndWaitForConfirmation(runData.initData, None)
+
+        if (userMessage.session.last) {
+          runData.expectedUsersCount = userMessage.session.userId + 1
+        }
+
+        if (runData.completedUsersCount == runData.expectedUsersCount)
+          terminateStatsEngineAndWaitForConfirmation(runData.initData, None)
         else
           stay()
       }
@@ -133,28 +127,21 @@ class Controller(selection: Selection, dataWriters: DataWriters, configuration: 
     runData.scheduler.scheduleUserStream(system, userStream)
   }
 
-  private def endAllRemainingUsers(runData: RunData): Unit = {
-    val now = nowMillis
-    for (userMessage <- runData.activeUsers.values) {
-      dispatchUserEndToDataWriter(userMessage.copy(event = End, date = now))
-    }
-  }
-
   private def dispatchUserEndToDataWriter(userMessage: UserMessage): Unit = {
     logger.info(s"End user #${userMessage.session.userId}")
-    dataWriters ! userMessage
+    statsEngine.logUser(userMessage)
   }
 
-  private def terminateDataWritersAndWaitForConfirmation(initData: InitData, exception: Option[Exception]): State = {
-    dataWriters.terminate(self)
-    goto(WaitingForDataWritersToTerminate) using EndData(initData, exception)
+  private def terminateStatsEngineAndWaitForConfirmation(initData: InitData, exception: Option[Exception]): State = {
+    statsEngine.terminate(self)
+    goto(WaitingForStatsEngineToTerminate) using EndData(initData, exception)
   }
 
   // -- STEP 4 : Waiting for DataWriters to terminate, discarding all other messages -- //
 
-  when(WaitingForDataWritersToTerminate) {
-    case Event(DataWritersTerminated, endData: EndData) =>
-      endData.initData.runner ! answerToRunner(endData)
+  when(WaitingForStatsEngineToTerminate) {
+    case Event(StatsEngineTerminated, endData: EndData) =>
+      endData.initData.runner ! replyToRunner(endData)
       goto(Stopped) using NoData
 
     case Event(message, _) =>
@@ -162,7 +149,7 @@ class Controller(selection: Selection, dataWriters: DataWriters, configuration: 
       stay()
   }
 
-  private def answerToRunner(endData: EndData): Try[Unit] =
+  private def replyToRunner(endData: EndData): Try[Unit] =
     endData.exception match {
       case Some(exception) => Failure(exception)
       case None            => Success(())

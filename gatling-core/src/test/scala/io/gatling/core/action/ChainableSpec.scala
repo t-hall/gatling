@@ -17,7 +17,6 @@ package io.gatling.core.action
 
 import akka.actor.ActorRef
 import akka.testkit.TestActorRef
-
 import io.gatling.AkkaSpec
 import io.gatling.core.session.Session
 
@@ -27,22 +26,25 @@ class ChainableSpec extends AkkaSpec {
     var hasRun = false
 
     override def execute(session: Session): Unit =
-      if (fail) throw new Exception("expected crash")
-      else hasRun = true
+      if (fail) {
+        val e = new Exception("expected crash")
+        e.setStackTrace(Array.empty)
+        throw e
+      } else hasRun = true
   }
 
   "A Chainable Action" should "call the execute method when receiving a Session" in {
     val testAction = TestActorRef(new TestAction(self, fail = false))
 
     testAction.underlyingActor.hasRun shouldBe false
-    testAction ! Session("scenario", "userId")
+    testAction ! Session("scenario", 0)
 
     testAction.underlyingActor.hasRun shouldBe true
   }
 
   it should "send the session, failed, to the next actor when crashing" in {
     val testAction = TestActorRef(new TestAction(self, fail = true))
-    val session = Session("scenario", "userId")
+    val session = Session("scenario", 0)
 
     testAction ! session
 

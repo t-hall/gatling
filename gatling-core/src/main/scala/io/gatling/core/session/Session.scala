@@ -17,14 +17,15 @@ package io.gatling.core.session
 
 import scala.reflect.ClassTag
 
+import io.gatling.core.stats.message.{ KO, OK, Status }
+
 import com.typesafe.scalalogging.LazyLogging
 
 import io.gatling.core.NotNothing
-import io.gatling.core.result.message.{ KO, OK, Status }
 import io.gatling.core.session.el.ElMessages
 import io.gatling.core.util.TimeHelper.nowMillis
-import io.gatling.core.util.TypeHelper.TypeCaster
-import io.gatling.core.validation.Validation
+import io.gatling.core.util.TypeHelper._
+import io.gatling.core.validation._
 import akka.actor.ActorRef
 
 /**
@@ -38,7 +39,7 @@ object SessionPrivateAttributes {
 case class SessionAttribute(session: Session, key: String) {
 
   def as[T: NotNothing]: T = session.attributes(key).asInstanceOf[T]
-  def asOption[T: NotNothing]: Option[T] = session.attributes.get(key).map(_.asInstanceOf[T])
+  def asOption[T: ClassTag: NotNothing]: Option[T] = session.attributes.get(key).flatMap(_.asOption[T])
   def validate[T: ClassTag: NotNothing]: Validation[T] = session.attributes.get(key) match {
     case Some(value) => value.asValidation[T]
     case None        => ElMessages.undefinedSessionAttribute(key)
@@ -58,22 +59,23 @@ object Session {
  * @constructor creates a new session
  * @param scenario the name of the current scenario
  * @param userId the id of the current user
- * @param userEnd hook to execute once the user terminates
  * @param attributes the map that stores all values needed
  * @param startDate when the user was started
  * @param drift the cumulated time that was spent in Gatling on computation and that wasn't compensated for
  * @param baseStatus the status when not in a TryMax blocks hierarchy
  * @param blockStack the block stack
+ * @param onExit hook to execute once the user reaches the exit
  */
 case class Session(
     scenario: String,
-    userId: String,
+    userId: Long,
     attributes: Map[String, Any] = Map.empty,
     startDate: Long = nowMillis,
     drift: Long = 0L,
     baseStatus: Status = OK,
     blockStack: List[Block] = Nil,
-    userEnd: Session => Unit = session => ()) extends LazyLogging {
+    onExit: Session => Unit = session => (),
+    last: Boolean = false) extends LazyLogging {
 
   def apply(name: String) = SessionAttribute(this, name)
   def setAll(newAttributes: (String, Any)*): Session = setAll(newAttributes.toIterable)
@@ -209,5 +211,5 @@ case class Session(
     (session, update) => update(session)
   }
 
-  def terminate(): Unit = userEnd(this)
+  def terminate(): Unit = onExit(this)
 }

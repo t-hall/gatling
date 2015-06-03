@@ -15,13 +15,13 @@
  */
 package io.gatling.http.request
 
-import com.ning.http.client.{ RequestBuilder, SignatureCalculator, Request }
-
 import io.gatling.core.session._
 import io.gatling.core.validation._
 import io.gatling.http.check.HttpCheck
-import io.gatling.http.config.HttpProtocol
+import io.gatling.http.protocol.HttpComponents
 import io.gatling.http.response.Response
+
+import org.asynchttpclient.{ RequestBuilder, SignatureCalculator, Request }
 
 case class HttpRequestConfig(
   checks: List[HttpCheck],
@@ -32,7 +32,7 @@ case class HttpRequestConfig(
   silent: Option[Boolean],
   followRedirect: Boolean,
   discardResponseChunks: Boolean,
-  protocol: HttpProtocol,
+  httpComponents: HttpComponents,
   explicitResources: List[HttpRequestDef])
 
 case class HttpRequestDef(

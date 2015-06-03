@@ -18,11 +18,12 @@ package io.gatling.core.session
 import akka.actor.ActorRef.noSender
 
 import io.gatling.BaseSpec
-import io.gatling.core.result.message._
+import io.gatling.core.stats.message.{ KO, OK }
+import io.gatling.core.validation.{ Success, Failure }
 
 class SessionSpec extends BaseSpec {
 
-  def newSession = Session("scenario", "1")
+  def newSession = Session("scenario", 0)
 
   "setAll" should "set all give key/values pairs in session" in {
     val session = newSession.setAll("key" -> 1, "otherKey" -> 2)
@@ -369,7 +370,7 @@ class SessionSpec extends BaseSpec {
 
   "terminate" should "call the userEnd function" in {
     var i = 0
-    val session = newSession.copy(userEnd = (s: Session) => i += 1)
+    val session = newSession.copy(onExit = (s: Session) => i += 1)
     session.terminate()
 
     i shouldBe 1
@@ -384,5 +385,50 @@ class SessionSpec extends BaseSpec {
     val session = newSession
     val unModifiedSession = Session.Identity(session)
     session should be theSameInstanceAs unModifiedSession
+  }
+
+  "as[T]" should "return the value when key is defined and value of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    session("foo").as[String] shouldBe "bar"
+  }
+
+  it should "throw an exception when key isn't defined" in {
+    val session = newSession
+    a[java.util.NoSuchElementException] shouldBe thrownBy(session("foo").as[String])
+  }
+
+  it should "throw an exception when the value isn't of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    a[java.lang.ClassCastException] shouldBe thrownBy(session("foo").as[Int])
+  }
+
+  "asOption[T]" should "return a Some(value) when key is defined and value of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    session("foo").asOption[String] shouldBe Some("bar")
+  }
+
+  it should "return None when key isn't defined" in {
+    val session = newSession
+    session("foo").asOption[String] shouldBe None
+  }
+
+  it should "throw an exception when the value isn't of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    a[java.lang.ClassCastException] shouldBe thrownBy(session("foo").asOption[Int])
+  }
+
+  "validate[T]" should "return a Validation(value) when key is defined and value of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    session("foo").validate[String] shouldBe Success("bar")
+  }
+
+  it should "return a Failure when key isn't defined" in {
+    val session = newSession
+    session("foo").validate[String] shouldBe a[Failure]
+  }
+
+  it should "return a Failure when the value isn't of the expected type" in {
+    val session = newSession.set("foo", "bar")
+    session("foo").validate[Int] shouldBe a[Failure]
   }
 }

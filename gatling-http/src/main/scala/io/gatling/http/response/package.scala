@@ -15,7 +15,7 @@
  */
 package io.gatling.http
 
-import com.ning.http.client.Request
+import org.asynchttpclient.Request
 
 package object response {
 

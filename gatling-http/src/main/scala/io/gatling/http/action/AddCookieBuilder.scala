@@ -15,25 +15,25 @@
  */
 package io.gatling.http.action
 
-import akka.actor.{ ActorSystem, ActorRef }
-import com.ning.http.client.cookie.Cookie
-import com.ning.http.client.uri.Uri
 import io.gatling.core.action.SessionHook
+import io.gatling.core.protocol.ProtocolComponentsRegistry
+import io.gatling.http.protocol.HttpProtocol
 import io.gatling.core.session.{ Expression, Session }
 import io.gatling.core.structure.ScenarioContext
 import io.gatling.core.validation.{ FailureWrapper, SuccessWrapper }
-import io.gatling.http.config.{ DefaultHttpProtocol, HttpProtocol }
 import io.gatling.http.cookie.CookieSupport.storeCookie
+
+import akka.actor.{ ActorSystem, ActorRef }
+import org.asynchttpclient.cookie.Cookie
+import org.asynchttpclient.uri.Uri
 
 case class CookieDSL(name: Expression[String], value: Expression[String],
                      domain: Option[Expression[String]] = None,
                      path: Option[Expression[String]] = None,
-                     expires: Option[Long] = None,
-                     maxAge: Option[Int] = None) {
+                     maxAge: Option[Long] = None) {
 
   def withDomain(domain: Expression[String]) = copy(domain = Some(domain))
   def withPath(path: Expression[String]) = copy(path = Some(path))
-  def withExpires(expires: Long) = copy(expires = Some(expires))
   def withMaxAge(maxAge: Int) = copy(maxAge = Some(maxAge))
 }
 
@@ -42,23 +42,24 @@ object AddCookieBuilder {
   val NoBaseUrlFailure = "Neither cookie domain nor baseURL".failure
   val RootSuccess = "/".success
   val DefaultPath: Expression[String] = _ => RootSuccess
+}
 
-  def defaultDomain(httpProtocol: HttpProtocol) = {
+class AddCookieBuilder(name: Expression[String], value: Expression[String], domain: Option[Expression[String]], path: Option[Expression[String]], maxAge: Long) extends HttpActionBuilder {
+
+  import AddCookieBuilder._
+
+  private def defaultDomain(httpProtocol: HttpProtocol) = {
     val baseUrlHost = httpProtocol.baseURL.map(url => Uri.create(url).getHost)
     (session: Session) => baseUrlHost match {
       case Some(host) => host.success
       case _          => NoBaseUrlFailure
     }
   }
-}
 
-class AddCookieBuilder(name: Expression[String], value: Expression[String], domain: Option[Expression[String]], path: Option[Expression[String]], expires: Long, maxAge: Int)(implicit defaultHttpProtocol: DefaultHttpProtocol) extends HttpActionBuilder {
+  def build(system: ActorSystem, ctx: ScenarioContext, protocolComponentsRegistry: ProtocolComponentsRegistry, next: ActorRef): ActorRef = {
 
-  import AddCookieBuilder._
-
-  def build(system: ActorSystem, next: ActorRef, ctx: ScenarioContext): ActorRef = {
-
-    val resolvedDomain = domain.getOrElse(defaultDomain(ctx.protocols.protocol[HttpProtocol]))
+    val hc = httpComponents(protocolComponentsRegistry)
+    val resolvedDomain = domain.getOrElse(defaultDomain(hc.httpProtocol))
     val resolvedPath = path.getOrElse(DefaultPath)
 
     val expression: Expression[Session] = session => for {
@@ -66,9 +67,9 @@ class AddCookieBuilder(name: Expression[String], value: Expression[String], doma
       value <- value(session)
       domain <- resolvedDomain(session)
       path <- resolvedPath(session)
-      cookie = new Cookie(name, value, false, domain, path, expires, maxAge, false, false)
+      cookie = new Cookie(name, value, false, domain, path, maxAge, false, false)
     } yield storeCookie(session, domain, path, cookie)
 
-    system.actorOf(SessionHook.props(expression, ctx.dataWriters, next, true), actorName("addCookie"))
+    system.actorOf(SessionHook.props(expression, ctx.coreComponents.statsEngine, next, interruptable = true), actorName("addCookie"))
   }
 }

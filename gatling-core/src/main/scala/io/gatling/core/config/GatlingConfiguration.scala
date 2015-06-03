@@ -34,9 +34,23 @@ import com.typesafe.scalalogging.StrictLogging
  */
 object GatlingConfiguration extends StrictLogging {
 
+  private val GatlingDefaultsConfigFile = "gatling-defaults.conf"
+  private val GatlingConfigFile = "gatling.conf"
+  private val ActorSystemDefaultsConfigFile = "gatling-akka-defaults.conf"
+  private val ActorSystemConfigFile = "gatling-akka.conf"
+
+  def loadActorSystemConfiguration() = {
+    val classLoader = getClass.getClassLoader
+
+    val defaultsConfig = ConfigFactory.parseResources(classLoader, ActorSystemDefaultsConfigFile)
+    val customConfig = ConfigFactory.parseResources(classLoader, ActorSystemConfigFile)
+
+    configChain(customConfig, defaultsConfig)
+  }
+
   def loadForTest(props: mutable.Map[String, _ <: Any] = mutable.Map.empty): GatlingConfiguration = {
 
-    val defaultsConfig = ConfigFactory.parseResources(getClass.getClassLoader, "gatling-defaults.conf")
+    val defaultsConfig = ConfigFactory.parseResources(getClass.getClassLoader, GatlingDefaultsConfigFile)
     val propertiesConfig = ConfigFactory.parseMap(props)
     val config = configChain(ConfigFactory.systemProperties, propertiesConfig, defaultsConfig)
     mapToGatlingConfig(config)
@@ -70,8 +84,8 @@ object GatlingConfiguration extends StrictLogging {
 
     val classLoader = getClass.getClassLoader
 
-    val defaultsConfig = ConfigFactory.parseResources(classLoader, "gatling-defaults.conf")
-    val customConfig = ConfigFactory.parseResources(classLoader, "gatling.conf")
+    val defaultsConfig = ConfigFactory.parseResources(classLoader, GatlingDefaultsConfigFile)
+    val customConfig = ConfigFactory.parseResources(classLoader, GatlingConfigFile)
     val propertiesConfig = ConfigFactory.parseMap(props)
 
     val config = configChain(ConfigFactory.systemProperties, customConfig, propertiesConfig, defaultsConfig)
@@ -156,7 +170,6 @@ object GatlingConfiguration extends StrictLogging {
           requestTimeOut = config.getInt(http.ahc.RequestTimeout),
           useProxyProperties = config.getBoolean(http.ahc.UseProxyProperties),
           webSocketTimeout = config.getInt(http.ahc.WebSocketTimeout),
-          useRelativeURIsWithConnectProxies = config.getBoolean(http.ahc.UseRelativeURIsWithConnectProxies),
           acceptAnyCertificate = config.getBoolean(http.ahc.AcceptAnyCertificate),
           httpClientCodecMaxInitialLineLength = config.getInt(http.ahc.HttpClientCodecMaxInitialLineLength),
           httpClientCodecMaxHeaderSize = config.getInt(http.ahc.HttpClientCodecMaxHeaderSize),
@@ -168,16 +181,8 @@ object GatlingConfiguration extends StrictLogging {
           sslSessionCacheSize = config.getInt(http.ahc.SslSessionCacheSize),
           sslSessionTimeout = config.getInt(http.ahc.SslSessionTimeout))),
       data = DataConfiguration(
-        dataWriterClasses = config.getStringList(data.Writers).map { string =>
-          DataConfiguration.Aliases.get(string) match {
-            case Some(clazz) => clazz
-            case None        => string
-          }
-        },
-        dataReaderClass = config.getString(data.Reader).trim match {
-          case "file" => "io.gatling.charts.result.reader.FileDataReader"
-          case clazz  => clazz
-        },
+        dataWriterClasses = config.getStringList(data.Writers).map(DataConfiguration.resolveAlias(_, DataConfiguration.DataWriterAliases)),
+        dataReaderClass = DataConfiguration.resolveAlias(config.getString(data.Reader), DataConfiguration.DataReaderAliases),
         console = ConsoleDataWriterConfiguration(
           light = config.getBoolean(data.console.Light)),
         file = FileDataWriterConfiguration(
@@ -188,11 +193,11 @@ object GatlingConfiguration extends StrictLogging {
           light = config.getBoolean(data.graphite.Light),
           host = config.getString(data.graphite.Host),
           port = config.getInt(data.graphite.Port),
-          protocol = GraphiteProtocol(config.getString(data.graphite.Protocol).trim),
+          protocol = TransportProtocol(config.getString(data.graphite.Protocol).trim),
           rootPathPrefix = config.getString(data.graphite.RootPathPrefix),
           bufferSize = config.getInt(data.graphite.BufferSize),
           writeInterval = config.getInt(data.graphite.WriteInterval))),
-      config)
+      config = config)
 
 }
 
@@ -276,7 +281,6 @@ case class AhcConfiguration(
   requestTimeOut: Int,
   useProxyProperties: Boolean,
   webSocketTimeout: Int,
-  useRelativeURIsWithConnectProxies: Boolean,
   acceptAnyCertificate: Boolean,
   httpClientCodecMaxInitialLineLength: Int,
   httpClientCodecMaxHeaderSize: Int,
@@ -300,16 +304,23 @@ case class StoreConfiguration(
 
 object DataConfiguration {
 
-  case class DataWriterAlias(alias: String, className: String)
+  val ConsoleDataWriterAlias = ClassAlias("console", "io.gatling.core.stats.writer.ConsoleDataWriter")
+  val FileDataWriterAlias = ClassAlias("file", "io.gatling.core.stats.writer.FileDataWriter")
+  val GraphiteDataWriterAlias = ClassAlias("graphite", "io.gatling.metrics.GraphiteDataWriter")
+  val LeakReporterDataWriterAlias = ClassAlias("leak", "io.gatling.core.stats.writer.LeakReporterDataWriter")
 
-  val ConsoleDataWriterAlias = DataWriterAlias("console", "io.gatling.core.result.writer.ConsoleDataWriter")
-  val FileDataWriterAlias = DataWriterAlias("file", "io.gatling.core.result.writer.FileDataWriter")
-  val GraphiteDataWriterAlias = DataWriterAlias("graphite", "io.gatling.metrics.GraphiteDataWriter")
-  val JdbcDataWriterAlias = DataWriterAlias("jdbc", "io.gatling.jdbc.result.writer.JdbcDataWriter")
-  val LeakReporterDataWriterAlias = DataWriterAlias("leak", "io.gatling.core.result.writer.LeakReporterDataWriter")
+  val FileDataReaderAlias = ClassAlias("file", "io.gatling.charts.stats.reader.FileDataReader")
 
-  val Aliases = Seq(ConsoleDataWriterAlias, FileDataWriterAlias, GraphiteDataWriterAlias, JdbcDataWriterAlias, LeakReporterDataWriterAlias)
+  val DataWriterAliases = Seq(ConsoleDataWriterAlias, FileDataWriterAlias, GraphiteDataWriterAlias, LeakReporterDataWriterAlias)
     .map(alias => alias.alias -> alias.className).toMap
+
+  val DataReaderAliases = Seq(FileDataReaderAlias)
+    .map(alias => alias.alias -> alias.className).toMap
+
+  def resolveAlias(string: String, aliases: Map[String, String]): String = aliases.get(string) match {
+    case Some(clazz) => clazz
+    case None        => string
+  }
 }
 
 case class DataConfiguration(
@@ -329,23 +340,6 @@ case class FileDataWriterConfiguration(
 case class LeakDataWriterConfiguration(
   noActivityTimeout: Int)
 
-case class DbConfiguration(
-  url: String,
-  username: String,
-  password: String)
-
-case class CreateStatements(
-  createRunRecordTable: Option[String],
-  createRequestRecordTable: Option[String],
-  createScenarioRecordTable: Option[String],
-  createGroupRecordTable: Option[String])
-
-case class InsertStatements(
-  insertRunRecord: Option[String],
-  insertRequestRecord: Option[String],
-  insertScenarioRecord: Option[String],
-  insertGroupRecord: Option[String])
-
 case class ConsoleDataWriterConfiguration(
   light: Boolean)
 
@@ -353,7 +347,7 @@ case class GraphiteDataWriterConfiguration(
   light: Boolean,
   host: String,
   port: Int,
-  protocol: GraphiteProtocol,
+  protocol: TransportProtocol,
   rootPathPrefix: String,
   bufferSize: Int,
   writeInterval: Int)
@@ -364,3 +358,5 @@ case class GatlingConfiguration(
   http: HttpConfiguration,
   data: DataConfiguration,
   config: Config)
+
+case class ClassAlias(alias: String, className: String)

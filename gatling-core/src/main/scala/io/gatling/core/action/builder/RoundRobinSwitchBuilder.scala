@@ -17,9 +17,9 @@ package io.gatling.core.action.builder
 
 import akka.actor.{ ActorSystem, ActorRef }
 import io.gatling.core.action.Switch
-import io.gatling.core.config.Protocol
 import io.gatling.core.session.Expression
 import io.gatling.core.structure.{ ScenarioContext, ChainBuilder }
+import io.gatling.core.protocol.ProtocolComponentsRegistry
 import io.gatling.core.util.RoundRobin
 import io.gatling.core.validation.SuccessWrapper
 
@@ -27,18 +27,13 @@ class RoundRobinSwitchBuilder(possibilities: List[ChainBuilder]) extends ActionB
 
   require(possibilities.size >= 2, "Round robin switch requires at least 2 possibilities")
 
-  def build(system: ActorSystem, next: ActorRef, ctx: ScenarioContext) = {
+  def build(system: ActorSystem, ctx: ScenarioContext, protocolComponentsRegistry: ProtocolComponentsRegistry, next: ActorRef) = {
 
-    val possibleActions = possibilities.map(_.build(system, next, ctx)).toArray
+    val possibleActions = possibilities.map(_.build(system, ctx, protocolComponentsRegistry, next)).toArray
     val roundRobin = RoundRobin(possibleActions)
 
     val nextAction: Expression[ActorRef] = _ => roundRobin.next.success
 
-    system.actorOf(Switch.props(nextAction, ctx.dataWriters, next), actorName("roundRobinSwitch"))
-  }
-
-  override def defaultProtocols: Set[Protocol] = {
-    val actionBuilders = possibilities.flatMap(_.actionBuilders)
-    actionBuilders.flatMap(_.defaultProtocols).toSet
+    system.actorOf(Switch.props(nextAction, ctx.coreComponents.statsEngine, next), actorName("roundRobinSwitch"))
   }
 }

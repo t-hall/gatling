@@ -15,26 +15,27 @@
  */
 package io.gatling.http.action.ws
 
-import com.ning.http.client.ws.WebSocket
-
 import scala.collection.mutable
-import akka.actor.{ Props, ActorRef }
+
 import io.gatling.core.akka.BaseActor
 import io.gatling.core.check.CheckResult
-import io.gatling.core.result.message.{ ResponseTimings, KO, OK, Status }
-import io.gatling.core.result.writer.DataWriters
 import io.gatling.core.session.Session
+import io.gatling.core.stats.StatsEngine
+import io.gatling.core.stats.message.{ OK, KO, Status, ResponseTimings }
 import io.gatling.core.util.TimeHelper.nowMillis
 import io.gatling.core.validation.Success
 import io.gatling.http.ahc.{ HttpEngine, WsTx }
 import io.gatling.http.check.ws.{ ExpectedRange, UntilCount, ExpectedCount, WsCheck }
 
+import akka.actor.{ Props, ActorRef }
+import org.asynchttpclient.ws.WebSocket
+
 object WsActor {
-  def props(wsName: String, dataWriters: DataWriters)(implicit httpEngine: HttpEngine) =
-    Props(new WsActor(wsName, dataWriters))
+  def props(wsName: String, statsEngine: StatsEngine, httpEngine: HttpEngine) =
+    Props(new WsActor(wsName, statsEngine, httpEngine))
 }
 
-class WsActor(wsName: String, dataWriters: DataWriters)(implicit httpEngine: HttpEngine) extends BaseActor {
+class WsActor(wsName: String, statsEngine: StatsEngine, httpEngine: HttpEngine) extends BaseActor {
 
   def receive = initialState
 
@@ -68,7 +69,7 @@ class WsActor(wsName: String, dataWriters: DataWriters)(implicit httpEngine: Htt
 
   private def logResponse(session: Session, requestName: String, status: Status, started: Long, ended: Long, errorMessage: Option[String] = None): Unit = {
     val timings = ResponseTimings(started, ended, ended, ended)
-    dataWriters.logResponse(session, requestName, timings, status, None, errorMessage)
+    statsEngine.logResponse(session, requestName, timings, status, None, errorMessage)
   }
 
   val initialState: Receive = {
@@ -301,7 +302,7 @@ class WsActor(wsName: String, dataWriters: DataWriters)(implicit httpEngine: Htt
     case action: WsUserAction =>
       // reconnect on first client message tentative
       val newTx = tx.copy(reconnectCount = tx.reconnectCount + 1)
-      httpEngine.startWsTransaction(newTx, self)
+      WsTx.start(newTx, self, httpEngine)
 
       context.become(reconnectingState(status, reason, action))
 

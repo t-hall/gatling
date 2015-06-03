@@ -17,19 +17,19 @@ package io.gatling.core.action
 
 import akka.testkit._
 import io.gatling.AkkaSpec
-
-import io.gatling.core.result.writer.{ DataWriters, GroupMessage }
 import io.gatling.core.session.Session
+import io.gatling.core.stats.DefaultStatsEngine
+import io.gatling.core.stats.writer.GroupMessage
 
 class GroupEndSpec extends AkkaSpec {
 
   "GroupEnd" should "exit the current group" in {
     val dataWriterProbe = TestProbe()
-    val dataWriters = new DataWriters(system, List(dataWriterProbe.ref))
+    val statsEngine = new DefaultStatsEngine(system, List(dataWriterProbe.ref))
 
-    val groupEnd = TestActorRef(GroupEnd.props(dataWriters, self))
+    val groupEnd = TestActorRef(GroupEnd.props(statsEngine, self))
 
-    val session = Session("scenario", "userId")
+    val session = Session("scenario", 0)
     val sessionInGroup = session.enterGroup("group")
 
     groupEnd ! sessionInGroup

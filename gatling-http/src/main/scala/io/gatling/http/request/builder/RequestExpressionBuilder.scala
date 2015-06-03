@@ -17,32 +17,34 @@ package io.gatling.http.request.builder
 
 import java.net.InetAddress
 
-import io.gatling.http.cache.HttpCaches
+import scala.util.control.NonFatal
 
-import com.ning.http.client.uri.Uri
-import com.ning.http.client.{ RequestBuilder => AHCRequestBuilder, NameResolver, Request }
 import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session.{ Expression, Session }
 import io.gatling.core.validation._
 import io.gatling.http.HeaderNames
 import io.gatling.http.ahc.ChannelPoolPartitioning
-import io.gatling.http.config.HttpProtocol
+import io.gatling.http.cache.HttpCaches
 import io.gatling.http.cookie.CookieSupport
+import io.gatling.http.protocol.HttpComponents
 import io.gatling.http.referer.RefererHandling
 import io.gatling.http.util.{ DnsHelper, HttpHelper }
 
-import scala.util.control.NonFatal
-
 import com.typesafe.scalalogging.LazyLogging
+import org.asynchttpclient.channel.NameResolver
+import org.asynchttpclient.{ RequestBuilder => AHCRequestBuilder, Request }
+import org.asynchttpclient.uri.Uri
 
 object RequestExpressionBuilder {
   val BuildRequestErrorMapper = "Failed to build request: " + _
 }
 
-abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, protocol: HttpProtocol)(implicit configuration: GatlingConfiguration, httpCaches: HttpCaches)
+abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, httpComponents: HttpComponents)(implicit configuration: GatlingConfiguration)
     extends LazyLogging {
 
   import RequestExpressionBuilder._
+  val protocol = httpComponents.httpProtocol
+  val httpCaches = httpComponents.httpCaches
 
   def makeAbsolute(url: String): Validation[String]
 
@@ -62,25 +64,27 @@ abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, prot
     }
   }
 
-  def configureAddressNameResolver(session: Session, httpCaches: HttpCaches)(requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] = {
+  def configureAddressNameResolver(session: Session, httpCaches: HttpCaches)(requestBuilder: AHCRequestBuilder): AHCRequestBuilder = {
     if (!protocol.enginePart.shareDnsCache) {
       requestBuilder.setNameResolver(new NameResolver {
-        override def resolve(name: String): InetAddress = {
-          httpCaches.dnsLookupCacheEntry(session, name) match {
-            case Some(address) => address
-            case None =>
-              try {
-                DnsHelper.getAddressByName(name)
-              } catch {
-                case NonFatal(e) =>
-                  logger.warn(s"Failed to resolve address of name $name")
-                  NameResolver.JdkNameResolver.INSTANCE.resolve(name)
-              }
-          }
+        override def resolve(name: String): InetAddress = name match {
+          case "localhost" => InetAddress.getLoopbackAddress
+          case _ =>
+            httpCaches.dnsLookupCacheEntry(session, name) match {
+              case Some(address) => address
+              case None =>
+                try {
+                  DnsHelper.getAddressByName(name)
+                } catch {
+                  case NonFatal(e) =>
+                    logger.warn(s"Failed to resolve address of name $name")
+                    NameResolver.JdkNameResolver.INSTANCE.resolve(name)
+                }
+            }
         }
       })
     }
-    requestBuilder.success
+    requestBuilder
   }
 
   def configureProxy(uri: Uri)(requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] = {
@@ -95,9 +99,9 @@ abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, prot
     requestBuilder.success
   }
 
-  def configureCookies(session: Session, uri: Uri)(requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] = {
+  def configureCookies(session: Session, uri: Uri)(requestBuilder: AHCRequestBuilder): AHCRequestBuilder = {
     CookieSupport.getStoredCookies(session, uri).foreach(requestBuilder.addCookie)
-    requestBuilder.success
+    requestBuilder
   }
 
   def configureQuery(session: Session, uri: Uri)(requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] =
@@ -142,14 +146,21 @@ abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, prot
       case None        => requestBuilder.success
     }
 
+  def configureLocalAddress(session: Session)(requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] =
+    commonAttributes.address.orElse(protocol.enginePart.localAddress) match {
+      case Some(localAddress) => localAddress(session).map(requestBuilder.setLocalInetAddress)
+      case None               => requestBuilder.success
+    }
+
   protected def configureRequestBuilder(session: Session, uri: Uri, requestBuilder: AHCRequestBuilder): Validation[AHCRequestBuilder] =
     configureProxy(uri)(requestBuilder.setUri(uri))
-      .flatMap(configureAddressNameResolver(session, httpCaches))
-      .flatMap(configureCookies(session, uri))
+      .map(configureAddressNameResolver(session, httpCaches))
+      .map(configureCookies(session, uri))
       .flatMap(configureQuery(session, uri))
       .flatMap(configureVirtualHost(session))
       .flatMap(configureHeaders(session))
       .flatMap(configureRealm(session))
+      .flatMap(configureLocalAddress(session))
 
   def build: Expression[Request] = {
 
@@ -158,14 +169,10 @@ abstract class RequestExpressionBuilder(commonAttributes: CommonAttributes, prot
     (session: Session) => {
       val requestBuilder = new AHCRequestBuilder(commonAttributes.method, disableUrlEncoding)
 
-      requestBuilder.setBodyEncoding(configuration.core.encoding)
+      requestBuilder.setBodyCharset(configuration.core.charset)
 
       if (!protocol.enginePart.shareConnections)
-        requestBuilder.setConnectionPoolKeyStrategy(new ChannelPoolPartitioning(session))
-
-      protocol.enginePart.localAddress.foreach(requestBuilder.setLocalInetAddress)
-
-      commonAttributes.address.foreach(requestBuilder.setInetAddress)
+        requestBuilder.setConnectionPoolPartitioning(new ChannelPoolPartitioning(session))
 
       safe(BuildRequestErrorMapper) {
         for {

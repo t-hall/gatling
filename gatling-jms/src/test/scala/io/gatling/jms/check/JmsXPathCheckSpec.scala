@@ -19,17 +19,17 @@ import scala.collection.mutable
 
 import io.gatling.BaseSpec
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.{ ValidationValues, CoreModule }
+import io.gatling.core.{ ValidationValues, CoreDsl }
 import io.gatling.core.validation._
 import io.gatling.core.session.Session
 import io.gatling.jms.{ MockMessage, JmsCheck }
 
-class JmsXPathCheckSpec extends BaseSpec with ValidationValues with MockMessage with CoreModule with JmsCheckSupport {
+class JmsXPathCheckSpec extends BaseSpec with ValidationValues with MockMessage with CoreDsl with JmsCheckSupport {
 
   implicit val configuration = GatlingConfiguration.loadForTest()
   implicit def cache = mutable.Map.empty[Any, Any]
 
-  val session = Session("mockSession", "mockUserName")
+  val session = Session("mockSession", 0)
   val check: JmsCheck = xpath("/ok").find
 
   "xpath check" should "return success if condition is true" in {

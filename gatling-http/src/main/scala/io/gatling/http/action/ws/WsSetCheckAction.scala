@@ -15,8 +15,9 @@
  */
 package io.gatling.http.action.ws
 
+import io.gatling.core.stats.StatsEngine
+
 import akka.actor.{ Props, ActorRef }
-import io.gatling.core.result.writer.DataWriters
 import io.gatling.core.session._
 import io.gatling.http.check.ws._
 import io.gatling.http.action.RequestAction
@@ -25,18 +26,18 @@ object WsSetCheckAction {
   def props(requestName: Expression[String],
             checkBuilder: WsCheckBuilder,
             wsName: String,
-            dataWriters: DataWriters,
+            statsEngine: StatsEngine,
             next: ActorRef) =
-    Props(new WsSetCheckAction(requestName, checkBuilder, wsName, dataWriters, next))
+    Props(new WsSetCheckAction(requestName, checkBuilder, wsName, statsEngine, next))
 }
 
 class WsSetCheckAction(
   val requestName: Expression[String],
   checkBuilder: WsCheckBuilder,
   wsName: String,
-  dataWriters: DataWriters,
+  statsEngine: StatsEngine,
   val next: ActorRef)
-    extends RequestAction(dataWriters)
+    extends RequestAction(statsEngine)
     with WsAction {
 
   override def sendRequest(requestName: String, session: Session) =

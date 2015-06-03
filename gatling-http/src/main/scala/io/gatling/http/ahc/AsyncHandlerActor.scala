@@ -15,19 +15,14 @@
  */
 package io.gatling.http.ahc
 
-import akka.actor.Props
-
 import scala.util.control.NonFatal
-
-import com.ning.http.client.{ Request, RequestBuilder }
-import com.ning.http.client.uri.Uri
-import com.ning.http.util.StringUtils.stringBuilder
 
 import io.gatling.core.akka.BaseActor
 import io.gatling.core.check.Check
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.message.{ KO, OK, Status }
 import io.gatling.core.session.Session
+import io.gatling.core.stats.StatsEngine
+import io.gatling.core.stats.message.{ KO, OK, Status }
 import io.gatling.core.util.StringHelper.Eol
 import io.gatling.core.util.TimeHelper.nowMillis
 import io.gatling.http.HeaderNames
@@ -41,18 +36,23 @@ import io.gatling.http.util.HttpHelper
 import io.gatling.http.util.HttpHelper.{ isCss, resolveFromUri }
 import io.gatling.http.util.HttpStringBuilder
 
+import akka.actor.Props
+import org.asynchttpclient.{ Request, RequestBuilder }
+import org.asynchttpclient.uri.Uri
+import org.asynchttpclient.util.StringUtils.stringBuilder
+
 object AsyncHandlerActor {
-  def props(httpEngine: HttpEngine)(implicit configuration: GatlingConfiguration) =
-    Props(new AsyncHandlerActor(httpEngine))
+  def props(statsEngine: StatsEngine, httpEngine: HttpEngine)(implicit configuration: GatlingConfiguration) =
+    Props(new AsyncHandlerActor(statsEngine, httpEngine))
 }
 
-class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingConfiguration) extends BaseActor {
+class AsyncHandlerActor(statsEngine: StatsEngine, httpEngine: HttpEngine)(implicit configuration: GatlingConfiguration) extends BaseActor {
 
   override def preRestart(reason: Throwable, message: Option[Any]): Unit = {
 
       def abort(tx: HttpTx): Unit = {
         logger.error(s"AsyncHandlerActor crashed on message $message, forwarding user to the next action", reason)
-        if (tx.blocking)
+        if (tx.root)
           tx.next ! tx.session.markAsFailed
         else {
           val uri = tx.request.ahcRequest.getUri
@@ -119,7 +119,7 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
           Nil
       }
 
-      httpEngine.dataWriters.logResponse(
+      statsEngine.logResponse(
         tx.session,
         fullRequestName,
         response.timings,
@@ -138,11 +138,8 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
    * @param status the status of the request
    * @param response the response
    */
-  private def executeNext(tx: HttpTx, update: Session => Session, status: Status, response: Response): Unit = {
-
-    val protocol = tx.request.config.protocol
-
-    if (tx.blocking)
+  private def executeNext(tx: HttpTx, update: Session => Session, status: Status, response: Response): Unit =
+    if (tx.root) {
       httpEngine.resourceFetcherActorForFetchedPage(tx.request.ahcRequest, response, tx) match {
         case Some(resourceFetcherActor) =>
           context.actorOf(Props(resourceFetcherActor()), actorName("resourceFetcher"))
@@ -151,15 +148,16 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
           tx.next ! tx.session.increaseDrift(nowMillis - response.timings.responseEndDate)
       }
 
-    else {
+    } else {
       val uri = response.request.getUri
 
-      if (isCss(response.headers))
-        tx.next ! CssResourceFetched(uri, status, update, tx.silent, response.statusCode, response.lastModifiedOrEtag(protocol), response.body.string)
-      else
+      if (isCss(response.headers)) {
+        val httpProtocol = tx.request.config.httpComponents.httpProtocol
+        tx.next ! CssResourceFetched(uri, status, update, tx.silent, response.statusCode, response.lastModifiedOrEtag(httpProtocol), response.body.string)
+      } else {
         tx.next ! RegularResourceFetched(uri, status, update, tx.silent)
+      }
     }
-  }
 
   private def logAndExecuteNext(tx: HttpTx, update: Session => Session, status: Status, response: Response, message: Option[String]): Unit = {
 
@@ -179,7 +177,7 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
     logAndExecuteNext(tx, update, KO, response, Some(message))
 
   private def logGroupRequestUpdate(tx: HttpTx, status: Status, responseTimeInMillis: Int): Session => Session =
-    if (tx.blocking && !tx.silent)
+    if (tx.root && !tx.silent)
       // resource logging is done in ResourceFetcher
       _.logGroupRequest(responseTimeInMillis, status)
     else
@@ -190,29 +188,30 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
    */
   private def processResponse(tx: HttpTx, response: Response): Unit = {
 
+    import tx.request.config.httpComponents._
+
       def redirectRequest(statusCode: Int, redirectUri: Uri, sessionWithUpdatedCookies: Session): Request = {
         val originalRequest = tx.request.ahcRequest
+        val originalMethod = originalRequest.getMethod
 
-        val switchToGet = originalRequest.getMethod != "GET" && (statusCode == 303 || (statusCode == 302 && !tx.request.config.protocol.responsePart.strict302Handling))
+        val newHeaders = originalRequest.getHeaders
+          .delete(HeaderNames.Host)
+          .delete(HeaderNames.ContentLength)
+          .delete(HeaderNames.Cookie)
+          .delete(HeaderNames.ContentType)
 
-        val newMethod = if (switchToGet) "GET" else originalRequest.getMethod
+        val switchToGet = originalMethod != "GET" && (statusCode == 303 || (statusCode == 302 && !httpProtocol.responsePart.strict302Handling))
 
-        val requestBuilder = new RequestBuilder(newMethod)
+        val requestBuilder = new RequestBuilder(if (switchToGet) "GET" else originalMethod)
           .setUri(redirectUri)
-          .setBodyEncoding(configuration.core.encoding)
-          .setConnectionPoolKeyStrategy(originalRequest.getConnectionPoolPartitioning)
+          .setBodyCharset(configuration.core.charset)
+          .setConnectionPoolPartitioning(originalRequest.getConnectionPoolPartitioning)
           .setInetAddress(originalRequest.getInetAddress)
           .setLocalInetAddress(originalRequest.getLocalAddress)
           .setVirtualHost(originalRequest.getVirtualHost)
           .setProxyServer(originalRequest.getProxyServer)
           .setRealm(originalRequest.getRealm)
-
-        val originalHeaders = originalRequest.getHeaders
-        originalHeaders.remove(HeaderNames.Host)
-        originalHeaders.remove(HeaderNames.ContentLength)
-        originalHeaders.remove(HeaderNames.Cookie)
-        if (switchToGet) originalHeaders.remove(HeaderNames.ContentType)
-        requestBuilder.setHeaders(originalHeaders)
+          .setHeaders(newHeaders)
 
         for (cookie <- CookieSupport.getStoredCookies(sessionWithUpdatedCookies, redirectUri))
           requestBuilder.addCookie(cookie)
@@ -231,7 +230,7 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
                 val redirectURI = resolveFromUri(tx.request.ahcRequest.getUri, location)
 
                 val cacheRedirectUpdate =
-                  if (tx.request.config.protocol.requestPart.cache)
+                  if (httpProtocol.requestPart.cache)
                     cacheRedirect(tx.request.ahcRequest, redirectURI)
                   else
                     Session.Identity
@@ -246,7 +245,7 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
 
                 val newAhcRequest = redirectRequest(statusCode, redirectURI, newSession)
                 val redirectTx = loggedTx.copy(request = loggedTx.request.copy(ahcRequest = newAhcRequest), redirectCount = tx.redirectCount + 1)
-                httpEngine.startHttpTransaction(redirectTx)
+                HttpTx.start(redirectTx, tx.request.config.httpComponents)
 
               case None =>
                 ko(tx, update, response, "Redirect status, yet no Location header")
@@ -257,7 +256,7 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
         response.statusCode match {
           case Some(code) if HttpHelper.isPermanentRedirect(code) =>
             val originalUri = originalRequest.getUri
-            httpEngine.httpCaches.addRedirect(_, originalUri, redirectUri)
+            httpCaches.addRedirect(_, originalUri, redirectUri)
           case _ => Session.Identity
         }
 
@@ -270,9 +269,9 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
           case _    => KO
         }
 
-        val cacheContentUpdate = httpEngine.httpCaches.cacheContent(tx.request.config.protocol, tx.request.ahcRequest, response)
+        val cacheContentUpdate = httpCaches.cacheContent(httpProtocol, tx.request.ahcRequest, response)
 
-        val dsnCacheUpdate = httpEngine.httpCaches.cacheDnsLookup(tx.request.config.protocol, tx.request.ahcRequest.getUri.getHost, response.remoteAddress)
+        val dsnCacheUpdate = httpCaches.cacheDnsLookup(httpProtocol, tx.request.ahcRequest.getUri.getHost, response.remoteAddress)
 
         val totalUpdate = sessionUpdate andThen cacheContentUpdate andThen dsnCacheUpdate andThen checkSaveUpdate
 
@@ -302,8 +301,8 @@ class AsyncHandlerActor(httpEngine: HttpEngine)(implicit configuration: GatlingC
               tx.request.config.checks
 
           val storeRefererUpdate =
-            if (tx.blocking)
-              RefererHandling.storeReferer(tx.request.ahcRequest, response, tx.request.config.protocol)
+            if (tx.root)
+              RefererHandling.storeReferer(tx.request.ahcRequest, response, httpProtocol)
             else Session.Identity
 
           checkAndProceed(newUpdate andThen storeRefererUpdate, checks)

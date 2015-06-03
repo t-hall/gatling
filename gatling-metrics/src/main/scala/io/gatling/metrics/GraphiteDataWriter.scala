@@ -19,7 +19,7 @@ import scala.collection.mutable
 import scala.concurrent.duration.DurationInt
 
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.writer._
+import io.gatling.core.stats.writer._
 import io.gatling.core.util.TimeHelper.nowSeconds
 import io.gatling.metrics.message.GraphiteMetrics
 import io.gatling.metrics.sender.MetricsSender
@@ -40,7 +40,7 @@ private[gatling] class GraphiteDataWriter extends DataWriter[GraphiteData] {
 
   private val flushTimerName = "flushTimer"
 
-  def onInit(init: Init, controller: ActorRef): GraphiteData = {
+  def onInit(init: Init): GraphiteData = {
     import init._
 
     val metricsSender: ActorRef = context.actorOf(MetricsSender.props(configuration), actorName("metricsSender"))
@@ -49,8 +49,8 @@ private[gatling] class GraphiteDataWriter extends DataWriter[GraphiteData] {
 
     val pattern: GraphitePathPattern = new OldGraphitePathPattern(runMessage, configuration)
 
-    usersByScenario.update(pattern.allUsersPath, new UserBreakdownBuffer(scenarios.map(_.nbUsers).sum))
-    scenarios.foreach(scenario => usersByScenario += (pattern.usersPath(scenario.name) -> new UserBreakdownBuffer(scenario.nbUsers)))
+    usersByScenario.update(pattern.allUsersPath, new UserBreakdownBuffer(scenarios.map(_.totalUserEstimate).sum))
+    scenarios.foreach(scenario => usersByScenario += (pattern.usersPath(scenario.name) -> new UserBreakdownBuffer(scenario.totalUserEstimate)))
 
     setTimer(flushTimerName, Flush, configuration.data.graphite.writeInterval seconds, repeat = true)
 

@@ -100,6 +100,10 @@ class Checks {
     css("article.more a", "href")
     //#css
 
+    //#css-ofType
+    css("article.more a", "href").ofType[Node]
+    //#css-ofType
+
     jsonPath("$..foo.bar[2].baz").
     //#transform
     transform(string => string + "foo")
@@ -157,9 +161,9 @@ class Checks {
     regex("aWord").notExists
     //#regex-notExists
 
-    //#bodyString-is-RawFileBody
-    bodyString.is(RawFileBody("expected_response.json"))
-    //#bodyString-is-RawFileBody
+    //#bodyBytes-is-RawFileBody
+    bodyBytes.is(RawFileBody("expected_response.json"))
+    //#bodyBytes-is-RawFileBody
 
     //#bodyString-isElFileBody
     bodyString.is(ElFileBody("expected_template.json"))

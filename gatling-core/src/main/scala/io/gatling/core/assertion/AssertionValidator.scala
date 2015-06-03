@@ -16,9 +16,9 @@
 package io.gatling.core.assertion
 
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.{ GroupStatsPath, RequestStatsPath, StatsPath }
-import io.gatling.core.result.message.{ KO, OK, Status }
-import io.gatling.core.result.reader.{ GeneralStats, DataReader }
+import io.gatling.core.stats.message.{ KO, OK, Status }
+import io.gatling.core.stats.reader.{ GeneralStats, DataReader }
+import io.gatling.core.stats.{ RequestStatsPath, GroupStatsPath, StatsPath }
 import io.gatling.core.validation._
 
 class AssertionValidator(implicit configuration: GatlingConfiguration) {
@@ -83,7 +83,7 @@ class AssertionValidator(implicit configuration: GatlingConfiguration) {
     val printableTarget = assertion.target.printable(configuration)
 
     val realValues = assertion.target match {
-      case MeanRequestsPerSecondTarget => stats(None).map(_.meanRequestsPerSec.toInt)
+      case MeanRequestsPerSecondTarget => stats(None).map(s => math.round(s.meanRequestsPerSec).toInt)
       case target: CountTarget         => resolveCountTargetRealValues(target, stats)
       case target: TimeTarget          => resolveTimeTargetRealValues(target, stats)
     }
@@ -103,12 +103,10 @@ class AssertionValidator(implicit configuration: GatlingConfiguration) {
       case Count => resolvedStats.map(_.count)
       case Percent =>
         val metricCountsAndAllCounts = resolvedStats.map(_.count).zip(stats(None).map(_.count))
-        val percentages = metricCountsAndAllCounts.map { case (metricCount, allCount) => metricCount.toDouble / allCount * 100 }
-        percentages.map(_.toInt)
+        metricCountsAndAllCounts.map { case (metricCount, allCount) => math.round(metricCount.toDouble / allCount * 100).toInt }
       case PerMillion =>
         val metricCountsAndAllCounts = resolvedStats.map(_.count).zip(stats(None).map(_.count))
-        val percentages = metricCountsAndAllCounts.map { case (metricCount, allCount) => metricCount.toDouble / allCount * 1000000 }
-        percentages.map(_.toInt)
+        metricCountsAndAllCounts.map { case (metricCount, allCount) => math.round(metricCount.toDouble / allCount * 1000000).toInt }
     }
   }
 

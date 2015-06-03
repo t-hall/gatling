@@ -17,53 +17,53 @@ package io.gatling.core.action
 
 import akka.actor.ActorRef
 import akka.testkit._
-
 import io.gatling.AkkaSpec
-import io.gatling.core.result.writer.{ GroupMessage, DataWriters }
 import io.gatling.core.session.Session
+import io.gatling.core.stats.DefaultStatsEngine
+import io.gatling.core.stats.writer.GroupMessage
 
 class ExitHereIfFailedSpec extends AkkaSpec {
 
-  def createExitHereIfFailed(userEndProbe: TestProbe, datawriterProbe: TestProbe) =
-    TestActorRef(ExitHereIfFailed.props(userEndProbe.ref, new DataWriters(system, List(datawriterProbe.ref)), self))
+  def createExitHereIfFailed(exitProbe: TestProbe, datawriterProbe: TestProbe) =
+    TestActorRef(ExitHereIfFailed.props(exitProbe.ref, new DefaultStatsEngine(system, List(datawriterProbe.ref)), self))
 
   "ExitHereIfFailed" should "send the session to the next actor if the session was not failed" in {
-    val userEndProbe = TestProbe()
+    val exitProbe = TestProbe()
     val dataWriterProbe = TestProbe()
-    val exitHereIfFailed = createExitHereIfFailed(userEndProbe, dataWriterProbe)
+    val exitHereIfFailed = createExitHereIfFailed(exitProbe, dataWriterProbe)
 
-    val session = Session("scenario", "userId")
+    val session = Session("scenario", 0)
 
     exitHereIfFailed ! session
 
     expectMsg(session)
-    userEndProbe.expectNoMsg()
+    exitProbe.expectNoMsg()
   }
 
   it should "end the scenario by sending the session to the user end if the session failed" in {
-    val userEndProbe = TestProbe()
+    val exitProbe = TestProbe()
     val dataWriterProbe = TestProbe()
-    val exitHereIfFailed = createExitHereIfFailed(userEndProbe, dataWriterProbe)
+    val exitHereIfFailed = createExitHereIfFailed(exitProbe, dataWriterProbe)
 
-    val session = Session("scenario", "userId").enterTryMax("loop", ActorRef.noSender).markAsFailed
+    val session = Session("scenario", 0).enterTryMax("loop", ActorRef.noSender).markAsFailed
 
     exitHereIfFailed ! session
 
     expectNoMsg()
-    userEndProbe.expectMsg(session)
+    exitProbe.expectMsg(session)
   }
 
   it should "also log a group end if the user was inside a group" in {
-    val userEndProbe = TestProbe()
+    val exitProbe = TestProbe()
     val dataWriterProbe = TestProbe()
-    val exitHereIfFailed = createExitHereIfFailed(userEndProbe, dataWriterProbe)
+    val exitHereIfFailed = createExitHereIfFailed(exitProbe, dataWriterProbe)
 
-    val session = Session("scenario", "userId").enterGroup("group").markAsFailed
+    val session = Session("scenario", 0).enterGroup("group").markAsFailed
 
     exitHereIfFailed ! session
 
     expectNoMsg()
-    userEndProbe.expectMsg(session)
+    exitProbe.expectMsg(session)
     dataWriterProbe.expectMsgType[GroupMessage]
   }
 }

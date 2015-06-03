@@ -20,15 +20,17 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.xml.ws.http.HTTPException
 
-import akka.actor.ActorRef
-import com.ning.http.client.AsyncHandler.STATE
-import com.ning.http.client.AsyncHandler.STATE.{ ABORT, CONTINUE }
-import com.ning.http.client._
-import com.ning.http.client.providers.netty.response.NettyResponseBodyPart
-import com.typesafe.scalalogging.StrictLogging
 import io.gatling.core.util.TimeHelper.nowMillis
 import io.gatling.http.ahc.SseTx
+
+import akka.actor.ActorRef
+import org.asynchttpclient._
+import org.asynchttpclient.handler._
+import org.asynchttpclient.AsyncHandler.State
+import org.asynchttpclient.AsyncHandler.State.{ ABORT, CONTINUE }
+import org.asynchttpclient.netty.NettyResponseBodyPart
 import org.jboss.netty.handler.codec.http.HttpResponseStatus.OK
+import com.typesafe.scalalogging.StrictLogging
 
 class SseHandler(tx: SseTx, sseActor: ActorRef) extends AsyncHandler[Unit]
     with AsyncHandlerExtensions
@@ -62,7 +64,7 @@ class SseHandler(tx: SseTx, sseActor: ActorRef) extends AsyncHandler[Unit]
   override def onSendRequest(request: Any): Unit =
     logger.debug(s"Request $request has been sent by the http client")
 
-  override def onStatusReceived(responseStatus: HttpResponseStatus): STATE = {
+  override def onStatusReceived(responseStatus: HttpResponseStatus): State = {
 
     val statusCode = responseStatus.getStatusCode
     logger.debug(s"Status $statusCode received for sse '${tx.requestName}")
@@ -79,11 +81,11 @@ class SseHandler(tx: SseTx, sseActor: ActorRef) extends AsyncHandler[Unit]
     }
   }
 
-  override def onHeadersReceived(headers: HttpResponseHeaders): STATE =
+  override def onHeadersReceived(headers: HttpResponseHeaders): State =
     if (done.get) ABORT
     else CONTINUE
 
-  override def onBodyPartReceived(bodyPart: HttpResponseBodyPart): STATE = {
+  override def onBodyPartReceived(bodyPart: HttpResponseBodyPart): State = {
     if (done.get) {
       bodyPart.markUnderlyingConnectionAsToBeClosed()
       ABORT

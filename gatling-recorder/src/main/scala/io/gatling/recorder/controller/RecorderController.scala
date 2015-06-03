@@ -15,38 +15,26 @@
  */
 package io.gatling.recorder.controller
 
-import java.nio.file.Path
 import java.util.concurrent.ConcurrentLinkedQueue
 
-import io.gatling.recorder.config.{ RecorderMode, RecorderConfiguration, RecorderPropertiesBuilder }
-
-import com.ning.http.client.uri.Uri
-import io.gatling.recorder.http.handler.remote.TimedHttpRequest
-
 import scala.collection.JavaConversions._
-import scala.collection.mutable
 import scala.concurrent.duration.DurationLong
 
-import org.jboss.netty.handler.codec.http.{ HttpRequest, HttpResponse }
-import org.jboss.netty.handler.codec.http.HttpHeaders.Names.PROXY_AUTHORIZATION
-
-import com.ning.http.util.Base64
-import com.typesafe.scalalogging.StrictLogging
-
+import io.gatling.recorder.config.RecorderPropertiesBuilder
+import io.gatling.recorder.config.RecorderMode._
+import io.gatling.recorder.http.handler.remote.TimedHttpRequest
 import io.gatling.core.validation.{ Failure, Success }
 import io.gatling.core.util.PathHelper._
-import RecorderMode._
 import io.gatling.recorder.config.RecorderConfiguration
 import io.gatling.recorder.http.HttpProxy
 import io.gatling.recorder.scenario._
 import io.gatling.recorder.ui._
 
-private[recorder] object RecorderController {
-  def apply(props: mutable.Map[String, _], recorderConfigFile: Option[Path] = None): Unit = {
-    RecorderConfiguration.initialSetup(props, recorderConfigFile)
-    new RecorderController
-  }
-}
+import com.typesafe.scalalogging.StrictLogging
+import org.asynchttpclient.uri.Uri
+import org.asynchttpclient.util.Base64
+import org.jboss.netty.handler.codec.http.{ HttpRequest, HttpResponse }
+import org.jboss.netty.handler.codec.http.HttpHeaders.Names.PROXY_AUTHORIZATION
 
 private[recorder] class RecorderController extends StrictLogging {
 

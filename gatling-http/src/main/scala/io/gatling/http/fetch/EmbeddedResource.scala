@@ -15,16 +15,16 @@
  */
 package io.gatling.http.fetch
 
-import com.ning.http.client.uri.Uri
 import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session._
 import io.gatling.core.validation.Validation
 import io.gatling.http.HeaderNames
-import io.gatling.http.cache.HttpCaches
-import io.gatling.http.config.HttpProtocol
+import io.gatling.http.protocol.HttpComponents
 import io.gatling.http.request.builder.Http
 import io.gatling.http.request.builder.RequestBuilder._
 import io.gatling.http.request.HttpRequest
+
+import org.asynchttpclient.uri.Uri
 
 object EmbeddedResource {
 
@@ -37,7 +37,7 @@ sealed abstract class EmbeddedResource {
   def acceptHeader: Expression[String]
   val url = uri.toString
 
-  def toRequest(session: Session, protocol: HttpProtocol, httpCaches: HttpCaches, throttled: Boolean)(implicit configuration: GatlingConfiguration): Validation[HttpRequest] = {
+  def toRequest(session: Session, httpComponents: HttpComponents, throttled: Boolean)(implicit configuration: GatlingConfiguration): Validation[HttpRequest] = {
 
     val requestName = {
       val start = url.lastIndexOf('/') + 1
@@ -47,7 +47,8 @@ sealed abstract class EmbeddedResource {
         "/"
     }
 
-    val httpRequestDef = new Http(requestName.expression)(configuration, httpCaches).get(uri).header(HeaderNames.Accept, acceptHeader).build(protocol, throttled)
+    val http = new Http(requestName.expression)
+    val httpRequestDef = http.get(uri).header(HeaderNames.Accept, acceptHeader).build(httpComponents, throttled)
 
     httpRequestDef.build(requestName, session)
   }

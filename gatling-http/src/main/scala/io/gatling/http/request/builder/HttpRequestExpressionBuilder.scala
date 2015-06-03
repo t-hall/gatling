@@ -17,23 +17,23 @@ package io.gatling.http.request.builder
 
 import scala.collection.JavaConversions._
 
-import com.ning.http.client.multipart.StringPart
-import com.ning.http.client.uri.Uri
-import com.ning.http.client.{ RequestBuilder => AHCRequestBuilder }
-import com.ning.http.client.generators.InputStreamBodyGenerator
-
 import io.gatling.core.body._
 import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.session.Session
 import io.gatling.core.validation.{ FailureWrapper, SuccessWrapper, Validation }
 import io.gatling.http.{ HeaderNames, HeaderValues }
-import io.gatling.http.cache.{ ContentCacheEntry, HttpCaches }
-import io.gatling.http.config.HttpProtocol
+import io.gatling.http.cache.ContentCacheEntry
+import io.gatling.http.protocol.HttpComponents
 import io.gatling.http.request.BodyPart
 import io.gatling.http.util.HttpHelper
 
-class HttpRequestExpressionBuilder(commonAttributes: CommonAttributes, httpAttributes: HttpAttributes, protocol: HttpProtocol)(implicit configuration: GatlingConfiguration, httpCaches: HttpCaches)
-    extends RequestExpressionBuilder(commonAttributes, protocol) {
+import org.asynchttpclient.uri.Uri
+import org.asynchttpclient.{ RequestBuilder => AHCRequestBuilder }
+import org.asynchttpclient.request.body.generator.InputStreamBodyGenerator
+import org.asynchttpclient.request.body.multipart.StringPart
+
+class HttpRequestExpressionBuilder(commonAttributes: CommonAttributes, httpAttributes: HttpAttributes, httpComponents: HttpComponents)(implicit configuration: GatlingConfiguration)
+    extends RequestExpressionBuilder(commonAttributes, httpComponents) {
 
   def makeAbsolute(url: String): Validation[String] =
     if (HttpHelper.isAbsoluteHttpUrl(url))
@@ -86,7 +86,6 @@ class HttpRequestExpressionBuilder(commonAttributes: CommonAttributes, httpAttri
       def setBody(body: Body): Validation[AHCRequestBuilder] =
         body match {
           case StringBody(string)            => string(session).map(requestBuilder.setBody)
-          case RawFileBody(file)             => file(session).map(requestBuilder.setBody)
           case ByteArrayBody(bytes)          => bytes(session).map(requestBuilder.setBody)
           case CompositeByteArrayBody(bytes) => bytes(session).map(bs => requestBuilder.setBody(bs))
           case InputStreamBody(is)           => is(session).map(is => requestBuilder.setBody(new InputStreamBodyGenerator(is)))

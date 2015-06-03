@@ -15,10 +15,10 @@
  */
 package io.gatling.http
 
-import com.ning.http.client.ProxyServer
-import com.ning.http.client.ProxyServer.Protocol
+import io.gatling.http.protocol.Proxy
 
-import io.gatling.http.config.Proxy
+import org.asynchttpclient.proxy.ProxyServer
+import org.asynchttpclient.proxy.ProxyServer.Protocol
 
 package object ahc {
 

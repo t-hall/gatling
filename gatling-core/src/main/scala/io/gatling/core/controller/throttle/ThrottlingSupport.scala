@@ -25,14 +25,14 @@ sealed trait ThrottleStep {
   def rps(time: Long, previousLastValue: Int): Int
 }
 
-case class ReachIntermediate(target: Int, history: List[ThrottleStep]) {
-  def in(duration: FiniteDuration) = Throttling(Reach(target, duration) :: history)
+case class ReachIntermediate(target: Int) {
+  def in(duration: FiniteDuration) = Reach(target, duration)
 }
 
 case class Reach(target: Int, duration: FiniteDuration) extends ThrottleStep {
   val durationInSec = duration.toSeconds
   def target(previousLastValue: Int) = target
-  def rps(time: Long, previousLastValue: Int): Int = ((target - previousLastValue) * time / durationInSec + previousLastValue).toInt
+  def rps(time: Long, previousLastValue: Int): Int = (previousLastValue + (target - previousLastValue) * (time + 1) / durationInSec).toInt
 }
 
 case class Hold(duration: FiniteDuration) extends ThrottleStep {
@@ -48,15 +48,14 @@ case class Jump(target: Int) extends ThrottleStep {
 }
 
 trait ThrottlingSupport {
-  def steps: List[ThrottleStep] = Nil
-  def reachRps(target: Int) = ReachIntermediate(target, steps)
-  def holdFor(duration: FiniteDuration) = Throttling(Hold(duration) :: steps)
-  def jumpToRps(target: Int) = Throttling(Jump(target) :: steps)
+  def reachRps(target: Int) = ReachIntermediate(target)
+  def holdFor(duration: FiniteDuration) = Hold(duration)
+  def jumpToRps(target: Int) = Jump(target)
 }
 
-case class Throttling(override val steps: List[ThrottleStep]) extends ThrottlingSupport {
+object Throttling {
 
-  def profile: ThrottlingProfile = {
+  def apply(steps: Iterable[ThrottleStep]): Throttling = {
 
     val limit: (Long => Int) = {
         @tailrec
@@ -69,11 +68,11 @@ case class Throttling(override val steps: List[ThrottleStep]) extends Throttling
               valueAt(tail, pendingTime - head.durationInSec, head.target(previousLastValue))
         }
 
-      val reversedSteps = steps.reverse
+      val reversedSteps = steps.toList
       (now: Long) => valueAt(reversedSteps, now, 0)
     }
 
-    val duration: FiniteDuration = steps.foldLeft(0 second) { (acc, step) =>
+    val duration: FiniteDuration = steps.foldLeft(Duration.Zero) { (acc, step) =>
       step match {
         case Reach(_, d) => acc + d
         case Hold(d)     => acc + d
@@ -81,6 +80,8 @@ case class Throttling(override val steps: List[ThrottleStep]) extends Throttling
       }
     }
 
-    ThrottlingProfile(limit, duration)
+    Throttling(limit, duration)
   }
 }
+
+case class Throttling(limit: Long => Int, duration: FiniteDuration)

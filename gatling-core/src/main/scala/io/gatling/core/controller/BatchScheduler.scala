@@ -15,20 +15,20 @@
  */
 package io.gatling.core.controller
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.concurrent.duration._
 
-import akka.actor.{ ActorSystem, ActorRef }
+import io.gatling.core.stats.message.Start
+import io.gatling.core.stats.writer.UserMessage
 
-import io.gatling.core.result.message.Start
-import io.gatling.core.result.writer.UserMessage
+import akka.actor.{ ActorSystem, ActorRef }
 import io.gatling.core.session.Session
 import io.gatling.core.util.TimeHelper._
 
-class BatchScheduler(
-    userIdRoot: String,
-    startTime: Long,
-    batchWindow: FiniteDuration,
-    controller: ActorRef) {
+class BatchScheduler(startTime: Long,
+                     batchWindow: FiniteDuration,
+                     controller: ActorRef) {
 
   def scheduleUserStream(system: ActorSystem, userStream: UserStream): Unit = {
 
@@ -36,13 +36,16 @@ class BatchScheduler(
 
     val scenario = userStream.scenario
     val stream = userStream.stream
+    // FIXME use LongAdder
+    val userIdGen = new AtomicLong
 
-      def startUser(i: Int): Unit = {
+      def startUser(notLast: Boolean): Unit = {
         val session = Session(scenario = scenario.name,
-          userId = userIdRoot + (i + userStream.offset),
-          userEnd = scenario.ctx.protocols.userEnd)
-        controller ! UserMessage(session, Start, 0L)
-        scenario.entryPoint ! session
+          userId = userIdGen.getAndIncrement,
+          onExit = scenario.onExit,
+          last = !notLast)
+        controller ! UserMessage(session, Start, nowMillis)
+        scenario.entry ! session
       }
 
     if (stream.hasNext) {
@@ -50,23 +53,25 @@ class BatchScheduler(
       val nextBatchTimeOffset = batchTimeOffset + batchWindow
 
       var continue = true
+      var notLast = true
 
-      while (stream.hasNext && continue) {
+      while (notLast && continue) {
 
-        val (startingTime, index) = stream.next()
+        val startingTime = stream.next()
+        notLast = stream.hasNext
         val delay = startingTime - batchTimeOffset
         continue = startingTime < nextBatchTimeOffset
 
         if (continue && delay <= ZeroMs) {
-          startUser(index)
+          startUser(notLast)
         } else {
           // Reduce the starting time to the millisecond precision to avoid flooding the scheduler
-          system.scheduler.scheduleOnce(toMillisPrecision(delay))(startUser(index))
+          system.scheduler.scheduleOnce(toMillisPrecision(delay))(startUser(notLast))
         }
       }
 
       // schedule next batch
-      if (stream.hasNext) {
+      if (notLast) {
         system.scheduler.scheduleOnce(batchWindow) {
           controller ! ScheduleNextUserBatch(scenario.name)
         }

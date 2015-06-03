@@ -15,17 +15,17 @@
  */
 package io.gatling.core.action
 
-import io.gatling.core.result.writer.DataWriters
-
 import scala.concurrent.duration.{ Duration, DurationLong }
+
+import io.gatling.core.stats.StatsEngine
 
 import akka.actor.{ Props, ActorRef }
 import io.gatling.core.session.{ Expression, Session }
 import io.gatling.core.util.TimeHelper.nowMillis
 
 object Pace {
-  def props(intervalExpr: Expression[Duration], counter: String, dataWriters: DataWriters, next: ActorRef) =
-    Props(new Pace(intervalExpr, counter, dataWriters, next))
+  def props(intervalExpr: Expression[Duration], counter: String, statsEngine: StatsEngine, next: ActorRef) =
+    Props(new Pace(intervalExpr, counter, statsEngine, next))
 }
 
 /**
@@ -36,10 +36,10 @@ object Pace {
  * @param intervalExpr a function that decides how long to wait before the next iteration
  * @param counter the name of the counter used to keep track of the run state. Typically this would be random, but
  *                can be set explicitly if needed
- * @param dataWriters the DataWriters
+ * @param statsEngine the StatsEngine
  * @param next the next actor in the chain
  */
-class Pace(intervalExpr: Expression[Duration], counter: String, val dataWriters: DataWriters, val next: ActorRef) extends Interruptable with Failable {
+class Pace(intervalExpr: Expression[Duration], counter: String, val statsEngine: StatsEngine, val next: ActorRef) extends Interruptable with Failable {
 
   /**
    * Pace keeps track of when it can next run using a counter in the session. If this counter does not exist, it will

@@ -15,10 +15,8 @@
  */
 package io.gatling.http
 
-object Predef extends HttpModule with HttpDefaultComponents {
+object Predef extends HttpDsl {
 
-  def configurationForHttp = io.gatling.core.Predef.configuration
-
-  type Request = com.ning.http.client.Request
+  type Request = org.asynchttpclient.Request
   type Response = io.gatling.http.response.Response
 }

@@ -251,10 +251,23 @@ Gatling supports `CSS Selectors <http://jodd.org/doc/csselly>`_.
 *expression*  can be a plain ``String``, a ``String`` using Gatling EL or an ``Expression[String]``.
 
 *attribute* is an optional ``String``.
+
 When filled, check is performed against the attribute value.
 Otherwise check is performed against the node text content.
 
 .. includecode:: code/Checks.scala#css
+
+You can define an different return type with the ``ofType[T]`` extra step:
+
+.. includecode:: code/Checks.scala#css-ofType
+
+Gatling provides built-in support for the following types:
+
+* String
+* Node
+
+Specifying a ``Node`` let you perform complex deep DOM tree traversing, typically in a ``transform`` check step.
+Node is a `Jodd Lagardo <http://jodd.org/doc/lagarto/>`_ DOM `Node <http://jodd.org/api/jodd/lagarto/dom/Node.html>`_.
 
 .. _http-check-checksum:
 
@@ -439,10 +452,10 @@ Verifies that there are at least **two** occurrences of "aWord".
 
 Verifies that the response doesn't contain "aWord".
 
-.. includecode:: code/Checks.scala#bodyString-is-RawFileBody
+.. includecode:: code/Checks.scala#bodyBytes-is-RawFileBody
 
-Verifies that the response body matches the file ``user-files/bodies/expected_response.json``
+Verifies that the response body matches the binary content of the file ``user-files/bodies/expected_response.json``
 
 .. includecode:: code/Checks.scala#bodyString-isElFileBody
 
-Verifies that the response body matches the content of the file ``user-files/bodies/expected_template.json`` resolved with :ref:`Gatling Expression Language (EL) <el>`.
+Verifies that the response body matches the text content of the file ``user-files/bodies/expected_template.json`` resolved with :ref:`Gatling Expression Language (EL) <el>`.

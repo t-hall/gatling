@@ -15,12 +15,13 @@
  */
 package io.gatling.http.action
 
+import io.gatling.core.stats.StatsEngine
+
 import com.typesafe.scalalogging.StrictLogging
 
 import akka.actor.{ Props, ActorRef }
 import io.gatling.core.akka.ActorNames
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.result.writer.DataWriters
 import io.gatling.core.session.Session
 import io.gatling.core.validation._
 import io.gatling.http.ahc.{ HttpEngine, HttpTx }
@@ -29,8 +30,8 @@ import io.gatling.http.response._
 
 object HttpRequestAction extends ActorNames with StrictLogging {
 
-  def props(httpRequestDef: HttpRequestDef, httpEngine: HttpEngine, dataWriters: DataWriters, next: ActorRef)(implicit configuration: GatlingConfiguration) =
-    Props(new HttpRequestAction(httpRequestDef, httpEngine, dataWriters, next))
+  def props(httpRequestDef: HttpRequestDef, statsEngine: StatsEngine, httpEngine: HttpEngine, next: ActorRef)(implicit configuration: GatlingConfiguration) =
+    Props(new HttpRequestAction(httpRequestDef, statsEngine, httpEngine, next))
 }
 
 /**
@@ -38,12 +39,12 @@ object HttpRequestAction extends ActorNames with StrictLogging {
  *
  * @constructor constructs an HttpRequestAction
  * @param httpRequestDef the request definition
+ * @param statsEngine the StatsEngine
  * @param httpEngine the HttpEngine
- * @param dataWriters the DataWriters
  * @param next the next action that will be executed after the request
  */
-class HttpRequestAction(httpRequestDef: HttpRequestDef, httpEngine: HttpEngine, dataWriters: DataWriters, val next: ActorRef)(implicit configuration: GatlingConfiguration)
-    extends RequestAction(dataWriters) {
+class HttpRequestAction(httpRequestDef: HttpRequestDef, statsEngine: StatsEngine, httpEngine: HttpEngine, val next: ActorRef)(implicit configuration: GatlingConfiguration)
+    extends RequestAction(statsEngine) {
 
   import httpRequestDef._
 
@@ -51,7 +52,7 @@ class HttpRequestAction(httpRequestDef: HttpRequestDef, httpEngine: HttpEngine, 
     config.checks,
     config.responseTransformer,
     config.discardResponseChunks,
-    config.protocol.responsePart.inferHtmlResources)
+    config.httpComponents.httpProtocol.responsePart.inferHtmlResources)
   val requestName = httpRequestDef.requestName
 
   def sendRequest(requestName: String, session: Session): Validation[Unit] =
@@ -63,6 +64,6 @@ class HttpRequestAction(httpRequestDef: HttpRequestDef, httpEngine: HttpEngine, 
         responseBuilderFactory,
         next)
 
-      httpEngine.startHttpTransaction(tx)
+      HttpTx.start(tx, config.httpComponents)
     }
 }

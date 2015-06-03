@@ -17,7 +17,6 @@ package io.gatling.core.action
 
 import akka.testkit._
 import io.gatling.AkkaSpec
-
 import io.gatling.core.session.Session
 
 class RendezVousSpec extends AkkaSpec {
@@ -25,7 +24,7 @@ class RendezVousSpec extends AkkaSpec {
   "RendezVous" should "block the specified number of sessions until they have all reached it" in {
     val rendezVous = TestActorRef(RendezVous.props(3, self))
 
-    val session = Session("scenario", "userId")
+    val session = Session("scenario", 0)
 
     rendezVous ! session
     expectNoMsg()

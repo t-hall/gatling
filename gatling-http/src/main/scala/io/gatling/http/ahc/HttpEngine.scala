@@ -15,351 +15,100 @@
  */
 package io.gatling.http.ahc
 
-import java.util.{ ArrayList => JArrayList }
-import java.util.concurrent.{ ExecutorService, TimeUnit, Executors, ThreadFactory }
+import scala.util.control.NonFatal
 
-import akka.actor.{ ActorContext, ActorSystem, Props, ActorRef }
-import akka.routing.RoundRobinPool
-
-import org.jboss.netty.channel.Channel
-import org.jboss.netty.channel.socket.nio.{ NioWorkerPool, NioClientBossPool, NioClientSocketChannelFactory }
-import org.jboss.netty.logging.{ InternalLoggerFactory, Slf4JLoggerFactory }
-import org.jboss.netty.util.HashedWheelTimer
-import com.ning.http.client.{ AsyncHttpClient, AsyncHttpClientConfig, Request }
-import com.ning.http.client.providers.netty.NettyAsyncHttpProviderConfig
-import com.ning.http.client.providers.netty.NettyAsyncHttpProviderConfig.NettyWebSocketFactory
-import com.ning.http.client.providers.netty.ws.NettyWebSocket
-import com.ning.http.client.providers.netty.channel.pool.{ ChannelPool, DefaultChannelPool }
-import com.ning.http.client.ws.{ WebSocketListener, WebSocketUpgradeHandler }
-import com.typesafe.scalalogging.StrictLogging
-
-import io.gatling.core.ConfigKeys
+import io.gatling.core.CoreComponents
 import io.gatling.core.akka.ActorNames
-import io.gatling.core.check.CheckResult
 import io.gatling.core.config.GatlingConfiguration
-import io.gatling.core.controller.throttle.Throttler
-import io.gatling.core.result.message.OK
-import io.gatling.core.result.writer.DataWriters
-import io.gatling.core.session.{ Session, SessionPrivateAttributes }
-import io.gatling.core.util.TimeHelper._
-import io.gatling.http.fetch.{ RegularResourceFetched, ResourceFetcher }
-import io.gatling.http.action.sse.SseHandler
-import io.gatling.http.action.ws.WsListener
-import io.gatling.http.cache.{ ContentCacheEntry, HttpCaches }
-import io.gatling.http.check.ws.WsCheck
-import io.gatling.http.config.HttpProtocol
-import io.gatling.http.request.HttpRequest
-import io.gatling.http.response.ResponseBuilderFactory
-import io.gatling.http.util.SslHelper._
+import io.gatling.core.session._
+import io.gatling.http.HeaderNames._
+import io.gatling.http.HeaderValues._
+import io.gatling.http.fetch.ResourceFetcher
+import io.gatling.http.protocol.{ HttpComponents, HttpProtocol }
+import io.gatling.http.request.builder.Http
 
-object HttpTx {
-
-  def silent(request: HttpRequest, primary: Boolean): Boolean = {
-
-      def silentBecauseProtocolSilentResources = !primary && request.config.protocol.requestPart.silentResources
-
-      def silentBecauseProtocolSilentURI: Option[Boolean] = request.config.protocol.requestPart.silentURI
-        .map(_.matcher(request.ahcRequest.getUrl).matches)
-
-    request.config.silent.orElse(silentBecauseProtocolSilentURI).getOrElse(silentBecauseProtocolSilentResources)
-  }
-}
-
-case class HttpTx(session: Session,
-                  request: HttpRequest,
-                  responseBuilderFactory: ResponseBuilderFactory,
-                  next: ActorRef,
-                  blocking: Boolean = true,
-                  redirectCount: Int = 0,
-                  update: Session => Session = Session.Identity) {
-
-  val silent: Boolean = HttpTx.silent(request, blocking)
-}
-
-case class SseTx(session: Session,
-                 request: Request, // FIXME should it be a HttpRequest obj???
-                 requestName: String,
-                 protocol: HttpProtocol,
-                 next: ActorRef,
-                 start: Long,
-                 reconnectCount: Int = 0,
-                 check: Option[WsCheck] = None,
-                 pendingCheckSuccesses: List[CheckResult] = Nil,
-                 updates: List[Session => Session] = Nil) {
-
-  def applyUpdates(session: Session) = {
-    val newSession = session.update(updates)
-    copy(session = newSession, updates = Nil)
-  }
-}
-
-case class WsTx(session: Session,
-                request: Request,
-                requestName: String,
-                protocol: HttpProtocol,
-                next: ActorRef,
-                start: Long,
-                reconnectCount: Int = 0,
-                check: Option[WsCheck] = None,
-                pendingCheckSuccesses: List[CheckResult] = Nil,
-                updates: List[Session => Session] = Nil) {
-
-  def applyUpdates(session: Session) = {
-    val newSession = session.update(updates)
-    copy(session = newSession, updates = Nil)
-  }
-}
+import akka.actor.{ ActorSystem, ActorRef }
+import akka.routing.RoundRobinPool
+import org.asynchttpclient.{ AsyncHttpClient, RequestBuilder }
+import com.typesafe.scalalogging.StrictLogging
 
 object HttpEngine {
   val AhcAttributeName = SessionPrivateAttributes.PrivateAttributePrefix + "http.ahc"
+
+  def apply(system: ActorSystem, coreComponents: CoreComponents)(implicit configuration: GatlingConfiguration): HttpEngine =
+    new HttpEngine(system, coreComponents, AhcFactory(system, coreComponents))
 }
 
-class HttpEngine(implicit val configuration: GatlingConfiguration, val httpCaches: HttpCaches) extends ResourceFetcher with ActorNames with StrictLogging {
+class HttpEngine(system: ActorSystem, val coreComponents: CoreComponents, ahcFactory: AhcFactory)(implicit val configuration: GatlingConfiguration) extends ResourceFetcher with ActorNames with StrictLogging {
 
-  // set up Netty LoggerFactory for slf4j instead of default JDK
-  InternalLoggerFactory.setDefaultFactory(new Slf4JLoggerFactory)
-
-  private[this] var _state: Option[InternalState] = None
-  private[this] def state: InternalState = _state.getOrElse(throw new IllegalStateException("HttpEngine hasn't been started"))
-
-  def start(system: ActorSystem, dataWriters: DataWriters, throttler: Throttler): Unit = {
-
-    _state = Some(loadInternalState(system, dataWriters, throttler))
-
-    system.registerOnTermination(stop())
-    defaultAhc
-  }
-
-  def stop(): Unit = {
-    state.applicationThreadPool.shutdown()
-    state.nioThreadPool.shutdown()
-    _state = None
-  }
-
-  private def startHttpTransactionWithCache(origTx: HttpTx, ctx: ActorContext)(f: HttpTx => Unit): Unit = {
-    val tx = httpCaches.applyPermanentRedirect(origTx)
-    val uri = tx.request.ahcRequest.getUri
-    val method = tx.request.ahcRequest.getMethod
-
-    httpCaches.contentCacheEntry(tx.session, uri, method) match {
-
-      case None =>
-        f(tx)
-
-      case Some(ContentCacheEntry(Some(expire), _, _)) if nowMillis > expire =>
-        val newTx = tx.copy(session = httpCaches.clearContentCache(tx.session, uri, method))
-        f(newTx)
-
-      case _ =>
-        resourceFetcherActorForCachedPage(uri, tx) match {
-          case Some(resourceFetcherActor) =>
-            logger.info(s"Fetching resources of cached page request=${tx.request.requestName} uri=$uri: scenario=${tx.session.scenario}, userId=${tx.session.userId}")
-            ctx.actorOf(Props(resourceFetcherActor()), actorName("resourceFetcher"))
-
-          case None =>
-            logger.info(s"Skipping cached request=${tx.request.requestName} uri=$uri: scenario=${tx.session.scenario}, userId=${tx.session.userId}")
-            if (tx.blocking)
-              tx.next ! tx.session
-            else
-              tx.next ! RegularResourceFetched(uri, OK, Session.Identity, tx.silent)
-        }
-    }
-  }
-
-  def startHttpTransaction(origTx: HttpTx)(implicit ctx: ActorContext): Unit =
-    startHttpTransactionWithCache(origTx, ctx) { tx =>
-
-      logger.info(s"Sending request=${tx.request.requestName} uri=${tx.request.ahcRequest.getUri}: scenario=${tx.session.scenario}, userId=${tx.session.userId}")
-
-      val requestConfig = tx.request.config
-
-      val (newTx, client) = {
-        val (newSession, client) = httpClient(tx.session, requestConfig.protocol)
-        (tx.copy(session = newSession), client)
-      }
-
-      val ahcRequest = newTx.request.ahcRequest
-      val handler = new AsyncHandler(newTx, this)
-
-      if (requestConfig.throttled)
-        state.throttler.throttle(tx.session.scenario, () => client.executeRequest(ahcRequest, handler))
-      else
-        client.executeRequest(ahcRequest, handler)
-    }
-
-  def startWsTransaction(tx: WsTx, wsActor: ActorRef): Unit = {
-    val (newTx, client) = {
-      val (newSession, client) = httpClient(tx.session, tx.protocol)
-      (tx.copy(session = newSession), client)
-    }
-
-    val listener = new WsListener(newTx, wsActor)
-
-    val handler = new WebSocketUpgradeHandler.Builder().addWebSocketListener(listener).build
-    client.executeRequest(tx.request, handler)
-  }
-
-  def startSseTransaction(tx: SseTx, sseActor: ActorRef): Unit = {
-    val (newTx, client) = {
-      val (newSession, client) = httpClient(tx.session, tx.protocol)
-      (tx.copy(session = newSession), client)
-    }
-
-    val handler = new SseHandler(newTx, sseActor)
-    client.executeRequest(newTx.request, handler)
-  }
-
-  private def loadInternalState(system: ActorSystem, dataWriters: DataWriters, throttler: Throttler) = {
-
-    import configuration.http.{ ahc => ahcConfig }
-
-    val applicationThreadPool = Executors.newCachedThreadPool(new ThreadFactory {
-      override def newThread(r: Runnable) = {
-        val t = new Thread(r, "Netty Thread")
-        t.setDaemon(true)
-        t
-      }
-    })
-
-    val nioThreadPool = Executors.newCachedThreadPool
-
-    val nettyTimer = {
-      val timer = new HashedWheelTimer(10, TimeUnit.MILLISECONDS)
-      timer.start()
-      system.registerOnTermination(timer.stop())
-      timer
-    }
-
-    val channelPool = new DefaultChannelPool(ahcConfig.pooledConnectionIdleTimeout,
-      ahcConfig.connectionTTL,
-      ahcConfig.allowPoolingSslConnections,
-      nettyTimer)
-
-    val nettyConfig = {
-      val numWorkers = ahcConfig.ioThreadMultiplier * Runtime.getRuntime.availableProcessors
-      val socketChannelFactory = new NioClientSocketChannelFactory(new NioClientBossPool(nioThreadPool, 1, nettyTimer, null), new NioWorkerPool(nioThreadPool, numWorkers))
-      system.registerOnTermination(socketChannelFactory.releaseExternalResources())
-      val nettyConfig = new NettyAsyncHttpProviderConfig
-      nettyConfig.setSocketChannelFactory(socketChannelFactory)
-      nettyConfig.setNettyTimer(nettyTimer)
-      nettyConfig.setChannelPool(channelPool)
-      nettyConfig.setHttpClientCodecMaxInitialLineLength(ahcConfig.httpClientCodecMaxInitialLineLength)
-      nettyConfig.setHttpClientCodecMaxHeaderSize(ahcConfig.httpClientCodecMaxHeaderSize)
-      nettyConfig.setHttpClientCodecMaxChunkSize(ahcConfig.httpClientCodecMaxChunkSize)
-      nettyConfig.setNettyWebSocketFactory(new NettyWebSocketFactory {
-        override def newNettyWebSocket(channel: Channel, nettyConfig: NettyAsyncHttpProviderConfig): NettyWebSocket =
-          new NettyWebSocket(channel, nettyConfig, new JArrayList[WebSocketListener](1))
-      })
-      nettyConfig.setKeepEncodingHeader(ahcConfig.keepEncodingHeader)
-      nettyConfig.setWebSocketMaxFrameSize(ahcConfig.webSocketMaxFrameSize)
-      nettyConfig
-    }
-
-    val defaultAhcConfig = {
-      val ahcConfigBuilder = new AsyncHttpClientConfig.Builder()
-        .setAllowPoolingConnections(ahcConfig.allowPoolingConnections)
-        .setAllowPoolingSslConnections(ahcConfig.allowPoolingSslConnections)
-        .setCompressionEnforced(ahcConfig.compressionEnforced)
-        .setConnectTimeout(ahcConfig.connectTimeout)
-        .setPooledConnectionIdleTimeout(ahcConfig.pooledConnectionIdleTimeout)
-        .setReadTimeout(ahcConfig.readTimeout)
-        .setConnectionTTL(ahcConfig.connectionTTL)
-        .setIOThreadMultiplier(ahcConfig.ioThreadMultiplier)
-        .setMaxConnectionsPerHost(ahcConfig.maxConnectionsPerHost)
-        .setMaxConnections(ahcConfig.maxConnections)
-        .setMaxRequestRetry(ahcConfig.maxRetry)
-        .setRequestTimeout(ahcConfig.requestTimeOut)
-        .setUseProxyProperties(ahcConfig.useProxyProperties)
-        .setUserAgent(null)
-        .setExecutorService(applicationThreadPool)
-        .setAsyncHttpClientProviderConfig(nettyConfig)
-        .setWebSocketTimeout(ahcConfig.webSocketTimeout)
-        .setUseRelativeURIsWithConnectProxies(ahcConfig.useRelativeURIsWithConnectProxies)
-        .setAcceptAnyCertificate(ahcConfig.acceptAnyCertificate)
-        .setEnabledProtocols(ahcConfig.sslEnabledProtocols match {
-          case Nil => null
-          case ps  => ps.toArray
-        })
-        .setEnabledCipherSuites(ahcConfig.sslEnabledCipherSuites match {
-          case Nil => null
-          case ps  => ps.toArray
-        })
-        .setSslSessionCacheSize(if (ahcConfig.sslSessionCacheSize > 0) ahcConfig.sslSessionCacheSize else null)
-        .setSslSessionTimeout(if (ahcConfig.sslSessionTimeout > 0) ahcConfig.sslSessionTimeout else null)
-
-      val trustManagers = configuration.http.ssl.trustStore
-        .map(config => newTrustManagers(config.storeType, config.file, config.password, config.algorithm))
-
-      val keyManagers = configuration.http.ssl.keyStore
-        .map(config => newKeyManagers(config.storeType, config.file, config.password, config.algorithm))
-
-      if (trustManagers.isDefined || keyManagers.isDefined)
-        ahcConfigBuilder.setSSLContext(trustManagers, keyManagers)
-
-      ahcConfigBuilder.build
-    }
-
+  val asyncHandlerActors: ActorRef = {
     val poolSize = 3 * Runtime.getRuntime.availableProcessors
-    val asyncHandlerActors = system.actorOf(RoundRobinPool(poolSize).props(AsyncHandlerActor.props(this)), actorName("asyncHandler"))
+    val asyncHandlerActors = system.actorOf(RoundRobinPool(poolSize).props(AsyncHandlerActor.props(coreComponents.statsEngine, this)), actorName("asyncHandler"))
 
-    new InternalState(applicationThreadPool, nioThreadPool, channelPool, nettyConfig, defaultAhcConfig, dataWriters, throttler, asyncHandlerActors, system)
+    asyncHandlerActors
   }
 
-  def httpClient(session: Session, protocol: HttpProtocol): (Session, AsyncHttpClient) = {
-    if (protocol.enginePart.shareClient)
-      (session, defaultAhc)
+  def httpClient(session: Session, httpProtocol: HttpProtocol): (Session, AsyncHttpClient) = {
+    if (httpProtocol.enginePart.shareClient)
+      (session, ahcFactory.defaultAhc)
     else
       session(HttpEngine.AhcAttributeName).asOption[AsyncHttpClient] match {
         case Some(client) => (session, client)
         case _ =>
-          val httpClient = state.newAhc(session)
+          val httpClient = ahcFactory.newAhc(session)
           (session.set(HttpEngine.AhcAttributeName, httpClient), httpClient)
       }
   }
 
-  case class InternalState(applicationThreadPool: ExecutorService,
-                           nioThreadPool: ExecutorService,
-                           channelPool: ChannelPool,
-                           nettyConfig: NettyAsyncHttpProviderConfig,
-                           defaultAhcConfig: AsyncHttpClientConfig,
-                           dataWriters: DataWriters,
-                           throttler: Throttler,
-                           asyncHandlerActors: ActorRef,
-                           system: ActorSystem) {
+  private var warmedUp = false
 
-    def newAhc(session: Session): AsyncHttpClient = newAhc(Some(session))
+  def warmpUp(httpComponents: HttpComponents): Unit =
+    if (!warmedUp) {
+      logger.info("Start warm up")
+      warmedUp = true
 
-    def newAhc(session: Option[Session]) = {
-      val ahcConfig = session.flatMap { session =>
+      import httpComponents._
 
-        val trustManagers = for {
-          file <- session(ConfigKeys.http.ssl.trustStore.File).asOption[String]
-          password <- session(ConfigKeys.http.ssl.trustStore.Password).asOption[String]
-          storeType = session(ConfigKeys.http.ssl.trustStore.Type).asOption[String]
-          algorithm = session(ConfigKeys.http.ssl.trustStore.Algorithm).asOption[String]
-        } yield newTrustManagers(storeType, file, password, algorithm)
+      httpProtocol.warmUpUrl match {
+        case Some(url) =>
+          val requestBuilder = new RequestBuilder().setUrl(url)
+            .setHeader(Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .setHeader(AcceptLanguage, "en-US,en;q=0.5")
+            .setHeader(AcceptEncoding, "gzip")
+            .setHeader(Connection, KeepAlive)
+            .setHeader(UserAgent, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:16.0) Gecko/20100101 Firefox/16.0")
+            .setRequestTimeout(100)
 
-        val keyManagers = for {
-          file <- session(ConfigKeys.http.ssl.keyStore.File).asOption[String]
-          password <- session(ConfigKeys.http.ssl.keyStore.Password).asOption[String]
-          storeType = session(ConfigKeys.http.ssl.keyStore.Type).asOption[String]
-          algorithm = session(ConfigKeys.http.ssl.keyStore.Algorithm).asOption[String]
-        } yield newKeyManagers(storeType, file, password, algorithm)
+          httpProtocol.proxyPart.proxies.foreach {
+            case (httpProxy, httpsProxy) =>
+              val proxy = if (url.startsWith("https")) httpsProxy else httpProxy
+              requestBuilder.setProxyServer(proxy)
+          }
 
-        trustManagers.orElse(keyManagers).map { _ =>
-          logger.info(s"Setting a custom SSLContext for user ${session.userId}")
-          new AsyncHttpClientConfig.Builder(state.defaultAhcConfig).setSSLContext(trustManagers, keyManagers).build
-        }
+          try {
+            ahcFactory.defaultAhc.executeRequest(requestBuilder.build).get
+          } catch {
+            case NonFatal(e) => logger.info(s"Couldn't execute warm up request $url", e)
+          }
 
-      }.getOrElse(state.defaultAhcConfig)
+        case _ =>
+          val expression = "foo".expression
 
-      val client = new AsyncHttpClient(ahcConfig)
-      system.registerOnTermination(client.close())
-      client
+          implicit val protocol = this
+
+          new Http(expression)
+            .get(expression)
+            .header("bar", expression)
+            .queryParam(expression, expression)
+            .build(httpComponents, throttled = false)
+
+          new Http(expression)
+            .post(expression)
+            .header("bar", expression)
+            .formParam(expression, expression)
+            .build(httpComponents, throttled = false)
+      }
+
+      logger.info("Warm up done")
     }
-  }
-
-  lazy val defaultAhc: AsyncHttpClient = state.newAhc(None)
-  def dataWriters: DataWriters = state.dataWriters
-  def asyncHandlerActors: ActorRef = state.asyncHandlerActors
 }

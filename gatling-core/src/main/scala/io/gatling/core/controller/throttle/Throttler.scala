@@ -17,78 +17,95 @@ package io.gatling.core.controller.throttle
 
 import java.lang.System.nanoTime
 
-import io.gatling.core.scenario.SimulationDef
+import scala.concurrent.duration.{ Duration, DurationInt }
 
-import scala.concurrent.duration.{ FiniteDuration, DurationInt }
-
-import akka.actor.{ Props, ActorSystem, ActorRef }
+import akka.actor.{ Cancellable, Props, ActorSystem, ActorRef }
 import com.typesafe.scalalogging.StrictLogging
 import io.gatling.core.akka.BaseActor
-import io.gatling.core.util.TimeHelper.secondsSinceReference
+import io.gatling.core.scenario.SimulationParams
 
 sealed trait ThrottlerMessage
+case object Start extends ThrottlerMessage
 case object OneSecondTick extends ThrottlerMessage
 case class ThrottledRequest(scenarioName: String, request: () => Unit) extends ThrottlerMessage
-
-case class ThrottlingProfile(limit: Long => Int, duration: FiniteDuration)
 
 class ThisSecondThrottle(val limit: Int, var count: Int = 0) {
 
   def increment(): Unit = count += 1
   def limitReached: Boolean = count >= limit
+
+  override def toString = s"ThisSecondThrottle(limit=$limit, count=$count)"
 }
 
 object Throttler {
-  def apply(system: ActorSystem, simulationDef: SimulationDef, throttlerActorName: String) =
-    new Throttler(system.actorOf(ThrottlerActor.props(simulationDef), throttlerActorName))
+
+  val ThrottlerActorName = "gatling-throttler"
+
+  def apply(system: ActorSystem, simulationParams: SimulationParams) =
+    new Throttler(system.actorOf(ThrottlerActor.props(simulationParams), ThrottlerActorName))
 }
 
 class Throttler(throttlerActor: ActorRef) {
+
+  def start(): Unit = throttlerActor ! Start
 
   def throttle(scenarioName: String, action: () => Unit): Unit =
     throttlerActor ! ThrottledRequest(scenarioName, action)
 }
 
 object ThrottlerActor extends StrictLogging {
-
-  def props(simulationDef: SimulationDef) =
-    Props(new ThrottlerActor(simulationDef.globalThrottling, simulationDef.scenarioThrottlings))
-
-  def throttle(throttler: ActorRef, scenarioName: String, action: () => Unit): Unit =
-    throttler ! ThrottledRequest(scenarioName, action)
+  def props(simulationParams: SimulationParams) =
+    Props(new ThrottlerActor(simulationParams.globalThrottling, simulationParams.scenarioThrottlings))
 }
 
-class ThrottlerActor(globalProfile: Option[ThrottlingProfile], scenarioProfiles: Map[String, ThrottlingProfile]) extends BaseActor {
+class ThrottlerActor(globalThrottling: Option[Throttling], scenarioThrottlings: Map[String, Throttling]) extends BaseActor {
 
-  val timerCancellable = system.scheduler.schedule(0 seconds, 1 seconds, self, OneSecondTick)
+  // FIXME FSM
+  var timerCancellable: Cancellable = _
 
-  override def postStop(): Unit = timerCancellable.cancel()
+  override def postStop(): Unit = Option(timerCancellable).foreach(_.cancel())
 
+  // FIXME use a capped size?
   val buffer = collection.mutable.Queue.empty[(String, () => Unit)]
 
   var thisTickStartNanoRef: Long = _
-  var thisTickGlobalThrottle: Option[ThisSecondThrottle] = _
-  var thisTickPerScenarioThrottles: Map[String, ThisSecondThrottle] = _
+  var thisTickGlobalThrottle: Option[ThisSecondThrottle] = None
+  var thisTickPerScenarioThrottles: Map[String, ThisSecondThrottle] = Map.empty
   var requestPeriod: Double = _
   var thisTickRequestCount: Int = _
 
-  newSecond()
+  var thisTickStartSeconds: Int = -1
+
+  private def start(): Unit = {
+    timerCancellable = system.scheduler.schedule(Duration.Zero, 1 seconds, self, OneSecondTick)
+    newSecond()
+  }
 
   private def newSecond(): Unit = {
     thisTickStartNanoRef = nanoTime
-    val thisTickStartSeconds = secondsSinceReference
-    thisTickGlobalThrottle = globalProfile.map(p => new ThisSecondThrottle(p.limit(thisTickStartSeconds)))
-    thisTickPerScenarioThrottles = Map.empty ++ scenarioProfiles.mapValues(p => new ThisSecondThrottle(p.limit(thisTickStartSeconds)))
-    val globalLimit = thisTickGlobalThrottle.map(_.limit)
-    val perScenarioLimits = thisTickPerScenarioThrottles.map(_._2.limit)
+    tick()
+  }
 
-    val maxNumberOfRequests = math.min(perScenarioLimits.sum, globalLimit.getOrElse(Int.MaxValue))
+  private def tick(): Unit = {
+    thisTickStartSeconds += 1
+    val last = thisTickGlobalThrottle
+    thisTickGlobalThrottle = globalThrottling.map(p => new ThisSecondThrottle(p.limit(thisTickStartSeconds)))
+    thisTickPerScenarioThrottles = scenarioThrottlings.mapValues(p => new ThisSecondThrottle(p.limit(thisTickStartSeconds)))
+    val globalLimit = thisTickGlobalThrottle.map(_.limit)
+    val perScenarioLimit =
+      if (thisTickPerScenarioThrottles.nonEmpty)
+        Some(thisTickPerScenarioThrottles.map(_._2.limit).sum)
+      else
+        None
+
+    val maxNumberOfRequests = math.min(perScenarioLimit.getOrElse(Int.MaxValue), globalLimit.getOrElse(Int.MaxValue))
 
     requestPeriod = 1000.0 / maxNumberOfRequests
     thisTickRequestCount = 0
   }
 
   private def throttle(scenarioName: String, request: () => Unit, shiftInMillis: Int) = {
+
     val scenarioThrottler = thisTickPerScenarioThrottles.get(scenarioName)
 
     val sending = !thisTickGlobalThrottle.exists(_.limitReached) && !scenarioThrottler.exists(_.limitReached)
@@ -123,6 +140,7 @@ class ThrottlerActor(globalProfile: Option[ThrottlingProfile], scenarioProfiles:
       buffer += scenarioName -> request
 
   def receive = {
+    case Start                                   => start()
     case OneSecondTick                           => flushBuffer()
     case ThrottledRequest(scenarioName, request) => send(scenarioName, request)
   }

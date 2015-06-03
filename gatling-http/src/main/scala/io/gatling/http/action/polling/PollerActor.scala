@@ -17,13 +17,15 @@ package io.gatling.http.action.polling
 
 import scala.concurrent.duration.FiniteDuration
 
+import io.gatling.core.stats.StatsEngine
+
 import akka.actor.Props
 
 import io.gatling.core.session.Session
 import io.gatling.core.validation._
-import io.gatling.http.ahc.{ HttpTx, HttpEngine }
-import io.gatling.core.result.writer.DataWriters
+import io.gatling.http.ahc.HttpTx
 import io.gatling.http.fetch.RegularResourceFetched
+import io.gatling.http.protocol.HttpComponents
 import io.gatling.http.request.HttpRequestDef
 import io.gatling.http.response.ResponseBuilderFactory
 
@@ -32,9 +34,9 @@ object PollerActor {
             period: FiniteDuration,
             requestDef: HttpRequestDef,
             responseBuilderFactory: ResponseBuilderFactory,
-            httpEngine: HttpEngine,
-            dataWriters: DataWriters): Props =
-    Props(new PollerActor(pollerName, period, requestDef, responseBuilderFactory, httpEngine, dataWriters))
+            statsEngine: StatsEngine,
+            httpComponents: HttpComponents): Props =
+    Props(new PollerActor(pollerName, period, requestDef, responseBuilderFactory, statsEngine, httpComponents))
 
   private[polling] val PollTimerName = "pollTimer"
 }
@@ -44,8 +46,8 @@ class PollerActor(
   period: FiniteDuration,
   requestDef: HttpRequestDef,
   responseBuilderFactory: ResponseBuilderFactory,
-  httpEngine: HttpEngine,
-  dataWriters: DataWriters)
+  statsEngine: StatsEngine,
+  httpComponents: HttpComponents)
     extends PollerFSM {
 
   import PollerActor.PollTimerName
@@ -67,13 +69,13 @@ class PollerActor(
         }
 
         httpRequest <- requestDef.build(requestName, session).mapError { errorMessage =>
-          dataWriters.reportUnbuildableRequest(pollerName, session, errorMessage)
+          statsEngine.reportUnbuildableRequest(session, pollerName, errorMessage)
           errorMessage
         }
 
-        nonBlockingTx = HttpTx(session, httpRequest, responseBuilderFactory, self, blocking = false)
+        nonBlockingTx = HttpTx(session, httpRequest, responseBuilderFactory, self, root = false)
 
-      } yield httpEngine.startHttpTransaction(nonBlockingTx)
+      } yield HttpTx.start(nonBlockingTx, httpComponents)
 
       outcome match {
         case _: Success[_] =>

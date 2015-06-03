@@ -19,18 +19,20 @@ import scala.concurrent.duration._
 
 import javax.jms.{ Message, MessageListener }
 
+import io.gatling.core.stats.StatsEngine
+
 import akka.actor.ActorRef
-
-import org.apache.activemq.jndi.ActiveMQInitialContextFactory
-
-import io.gatling.core.config.{ GatlingConfiguration, Protocols }
+import io.gatling.core.CoreComponents
+import io.gatling.core.config.GatlingConfiguration
+import io.gatling.core.controller.throttle.Throttler
 import io.gatling.core.pause.Constant
-import io.gatling.core.result.writer.DataWriters
+import io.gatling.core.protocol.{ ProtocolComponentsRegistry, Protocols }
 import io.gatling.core.session.Session
 import io.gatling.core.structure.{ ScenarioContext, ScenarioBuilder }
-import io.gatling.jms.JmsDestination
 import io.gatling.jms._
 import io.gatling.jms.client.{ SimpleJmsClient, BrokerBasedSpec }
+import io.gatling.jms.request.JmsDestination
+import org.apache.activemq.jndi.ActiveMQInitialContextFactory
 
 class JmsMockCustomer(client: SimpleJmsClient, mockResponse: PartialFunction[Message, String]) extends MessageListener {
 
@@ -51,7 +53,7 @@ class JmsMockCustomer(client: SimpleJmsClient, mockResponse: PartialFunction[Mes
   }
 }
 
-trait JmsMockingSpec extends BrokerBasedSpec with JmsModule {
+trait JmsMockingSpec extends BrokerBasedSpec with JmsDsl {
 
   def jmsProtocol = jms
     .connectionFactoryName("ConnectionFactory")
@@ -60,8 +62,9 @@ trait JmsMockingSpec extends BrokerBasedSpec with JmsModule {
     .listenerCount(1)
 
   def runScenario(sb: ScenarioBuilder, timeout: FiniteDuration = 10.seconds, protocols: Protocols = Protocols(jmsProtocol))(implicit configuration: GatlingConfiguration) = {
-    val actor = sb.build(system, self, ScenarioContext(mock[ActorRef], mock[DataWriters], mock[ActorRef], protocols, Constant, throttled = false))
-    actor ! Session("TestSession", "testUser")
+    val coreComponents = CoreComponents(mock[ActorRef], mock[Throttler], mock[StatsEngine], mock[ActorRef])
+    val actor = sb.build(system, ScenarioContext(coreComponents, Constant, throttled = false), new ProtocolComponentsRegistry(system, coreComponents, protocols), self)
+    actor ! Session("TestSession", 0)
     val session = expectMsgClass(timeout, classOf[Session])
 
     session

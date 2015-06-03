@@ -45,7 +45,7 @@ class InjectionStepSpec extends BaseSpec {
     val first = rampScheduling.head
     val last = rampScheduling.last
 
-    first shouldBe (0 second)
+    first shouldBe Duration.Zero
     last shouldBe <(1 second)
     rampScheduling shouldBe sorted
   }
@@ -57,7 +57,7 @@ class InjectionStepSpec extends BaseSpec {
 
   val waiting = NothingForInjection(1 second)
   "NothingForInjection" should "return the correct number of users" in {
-    waiting.users shouldBe 0
+    waiting.totalUserEstimate shouldBe 0
   }
 
   it should "return the correct injection duration" in {
@@ -76,12 +76,12 @@ class InjectionStepSpec extends BaseSpec {
   val atOnceScheduling = peak.chain(Iterator.empty).toList
 
   it should "return the correct injection duration" in {
-    atOnceScheduling.max shouldBe (0 second)
+    atOnceScheduling.max shouldBe Duration.Zero
   }
 
   it should "return the correct injection scheduling" in {
     val uniqueScheduling = atOnceScheduling.toSet
-    uniqueScheduling should contain(0 second)
+    uniqueScheduling should contain(Duration.Zero)
     atOnceScheduling should have length peak.users
   }
 
@@ -101,7 +101,7 @@ class InjectionStepSpec extends BaseSpec {
   }
 
   it should "provides an injection scheduling with the correct values" in {
-    rampRateScheduling(0) shouldBe (0 seconds)
+    rampRateScheduling(0) shouldBe Duration.Zero
     rampRateScheduling(1) shouldBe (488 milliseconds)
   }
 
@@ -131,7 +131,7 @@ class InjectionStepSpec extends BaseSpec {
   "SplitInjection" should "provide an appropriate injection scheduling and ignore extra users" in {
     val scheduling = SplitInjection(6, RampInjection(2, 2 seconds), NothingForInjection(5 seconds)).chain(Iterator.empty).toList
     scheduling shouldBe List(
-      0 second, 1 second, // 1st ramp
+      Duration.Zero, 1 second, // 1st ramp
       7 seconds, 8 seconds, // 2nd ramp after a pause
       14 seconds, 15 seconds) // 3rd ramp after a pause
   }
@@ -139,7 +139,7 @@ class InjectionStepSpec extends BaseSpec {
   it should "should schedule the first and last user through the 'into' injection step" in {
     val scheduling = SplitInjection(5, RampInjection(2, 2 seconds), AtOnceInjection(1)).chain(AtOnceInjection(1).chain(Iterator.empty)).toList
     scheduling shouldBe List(
-      0 second, 1 second, // 1st ramp
+      Duration.Zero, 1 second, // 1st ramp
       2 seconds, // at once in between
       2 seconds, 3 seconds, // 2nd ramp until reaching 5 users
       4 seconds) // at once from the chained injection
@@ -170,8 +170,8 @@ class InjectionStepSpec extends BaseSpec {
     // Inject 1000 users per second for 60 seconds
     val inject = PoissonInjection(60 seconds, 1000.0, 1000.0, seed = 0L) // Seed with 0, to ensure tests are deterministic
     val scheduling = inject.chain(Iterator(0.seconds)).toVector // Chain to an injector with a zero timer
-    scheduling.size shouldBe (inject.users + 1)
-    scheduling.size shouldBe 60001 +- 200 // 60000 for the users injected by PoissonInjection, plus the 0 second one
+    scheduling.size shouldBe (inject.totalUserEstimate + 1) +- 1000 // Poisson injection is non deterministic
+    scheduling.size shouldBe 60001 +- 1000 // 60000 for the users injected by PoissonInjection, plus the 0 second one
     scheduling.last shouldBe (60 seconds)
     scheduling(scheduling.size - 2).toMillis shouldBe 60000L +- 5L
     scheduling.head.toMillis shouldBe 0L +- 5L
@@ -182,11 +182,11 @@ class InjectionStepSpec extends BaseSpec {
     // ramp from 0 to 1000 users per second over 60 seconds
     val inject = PoissonInjection(60.seconds, 0.0, 1000.0, seed = 0L) // Seed with 0, to ensure tests are deterministic
     val scheduling = inject.chain(Iterator(0.seconds)).toVector // Chain to an injector with a zero timer
-    scheduling.size shouldBe (inject.users + 1)
-    scheduling.size shouldBe 30001 +- 500 // 30000 for the users injected by PoissonInjection, plus the 0 second one
+    scheduling.size shouldBe (inject.totalUserEstimate + 1) +- 1000 // Poisson injection is non deterministic
+    scheduling.size shouldBe 30001 +- 1000 // 30000 for the users injected by PoissonInjection, plus the 0 second one
     scheduling.last shouldBe (60 seconds)
     scheduling(scheduling.size - 2).toMillis shouldBe 60000L +- 5L
-    scheduling.head.toMillis shouldBe 0L +- 200L
+    scheduling.head.toMillis shouldBe 0L +- 1000L
     scheduling(7500).toMillis shouldBe 30000L +- 1000L // Half-way through ramp-up we should have run a quarter of users
   }
 

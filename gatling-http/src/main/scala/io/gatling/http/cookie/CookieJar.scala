@@ -15,11 +15,11 @@
  */
 package io.gatling.http.cookie
 
-import com.ning.http.client.cookie.Cookie
-import com.ning.http.client.uri.Uri
-
 import io.gatling.core.util.TimeHelper.nowMillis
 import io.gatling.http.util.HttpHelper.isSecure
+
+import org.asynchttpclient.cookie.Cookie
+import org.asynchttpclient.uri.Uri
 
 case class CookieKey(name: String, domain: String, path: String)
 
@@ -27,8 +27,7 @@ case class StoredCookie(cookie: Cookie, hostOnly: Boolean, persistent: Boolean, 
 
 object CookieJar {
 
-  val UnspecifiedMaxAge = Int.MinValue
-  val UnspecifiedExpires = -1L
+  val UnspecifiedMaxAge = Long.MinValue
 
   def requestDomain(requestUri: Uri) = requestUri.getHost.toLowerCase
 
@@ -64,8 +63,7 @@ object CookieJar {
 
   def hasExpired(c: Cookie): Boolean = {
     val maxAge = c.getMaxAge
-    val expires = c.getExpires
-    (maxAge != CookieJar.UnspecifiedMaxAge && maxAge <= 0) || (expires != CookieJar.UnspecifiedExpires && expires <= nowMillis)
+    maxAge != CookieJar.UnspecifiedMaxAge && maxAge <= 0
   }
 
   // rfc6265#section-5.1.3
@@ -111,7 +109,7 @@ case class CookieJar(store: Map[CookieKey, StoredCookie]) {
           updatedStore - CookieKey(cookie.getName.toLowerCase, keyDomain, keyPath)
 
         } else {
-          val persistent = cookie.getExpires != UnspecifiedExpires || cookie.getMaxAge != UnspecifiedMaxAge
+          val persistent = cookie.getMaxAge != UnspecifiedMaxAge
           updatedStore + (CookieKey(cookie.getName.toLowerCase, keyDomain, keyPath) -> StoredCookie(cookie, hostOnly, persistent, nowMillis))
         }
     }

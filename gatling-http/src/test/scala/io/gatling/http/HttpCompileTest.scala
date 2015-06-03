@@ -124,7 +124,7 @@ class HttpCompileTest extends Simulation {
               xpath("//input[@id='${aaaa_value}']/@value").notExists,
               css(""".foo"""),
               css("""#foo""", "href"),
-              css(""".foo""").count.is(1),
+              css(""".foo""").ofType[Node].count.is(1),
               css(""".foo""").notExists,
               regex("""<input id="text1" type="text" value="aaaa" />""").optional.saveAs("var1"),
               regex("""<input id="text1" type="text" value="aaaa" />""").count.is(1),
@@ -132,7 +132,7 @@ class HttpCompileTest extends Simulation {
               status.in(200 to 210).saveAs("blablaParam"),
               status.in(200, 210).saveAs("blablaParam"),
               status.in(Seq(200, 304)).saveAs("blablaParam"),
-              bodyString.is(RawFileBody("foobar.txt")),
+              bodyBytes.is(RawFileBody("foobar.txt")),
               bodyString.is(ElFileBody("foobar.txt")),
               xpath("//input[@value='aaaa']/@id").not("omg"),
               xpath("//input[@id='text1']/@value").is("aaaa").saveAs("test2"),
@@ -257,7 +257,7 @@ class HttpCompileTest extends Simulation {
       details("Users" / "Search" / "Index page").responseTime.mean.greaterThan(0),
       details("Admins" / "Create").failedRequests.percent.lessThan(90),
       details("request_9").requestsPerSec.greaterThan(10))
-    .throttle(jumpToRps(20) reachRps (40) in (10 seconds) holdFor (30 seconds))
+    .throttle(jumpToRps(20), reachRps(40) in (10 seconds), holdFor(30 seconds))
     // Applies on the setup
     .constantPauses
     .disablePauses

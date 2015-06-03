@@ -20,27 +20,28 @@ import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 import javax.activation.MimetypesFileTypeMap
 
-import akka.actor.ActorRef
-import io.gatling.core.controller.throttle.Throttler
-import org.jboss.netty.buffer.ChannelBuffers
-import org.scalatest.BeforeAndAfter
-
 import scala.collection.JavaConversions._
 import scala.concurrent.duration._
 import scala.util.Try
 
-import org.jboss.netty.channel._
-import org.jboss.netty.handler.codec.http._
-
 import io.gatling.AkkaSpec
-import io.gatling.core.config.Protocols
+import io.gatling.core.CoreComponents
+import io.gatling.core.controller.throttle.Throttler
+import io.gatling.core.config.GatlingConfiguration
 import io.gatling.core.pause.Constant
-import io.gatling.core.result.writer.DataWriters
+import io.gatling.core.protocol.{ ProtocolComponentsRegistry, Protocols }
 import io.gatling.core.session.Session
+import io.gatling.core.stats.StatsEngine
 import io.gatling.core.structure.{ ScenarioContext, ScenarioBuilder }
 import io.gatling.core.util.Io
-import io.gatling.http.ahc.HttpEngine
-import io.gatling.http.config._
+import io.gatling.http.protocol.HttpProtocolBuilder
+
+import akka.actor.ActorRef
+import org.scalatest.BeforeAndAfter
+import org.jboss.netty.buffer.ChannelBuffers
+import org.jboss.netty.channel._
+import org.jboss.netty.handler.codec.http._
+import org.jboss.netty.handler.codec.http.cookie._
 
 abstract class HttpSpec extends AkkaSpec with BeforeAndAfter {
 
@@ -49,16 +50,15 @@ abstract class HttpSpec extends AkkaSpec with BeforeAndAfter {
 
   val mockHttpPort = Try(Io.withCloseable(new ServerSocket(0))(_.getLocalPort)).getOrElse(8072)
 
-  def httpProtocol(implicit httpProtocol: DefaultHttpProtocol) =
-    new HttpProtocolBuilder(httpProtocol.value).baseURL(s"http://localhost:$mockHttpPort")
+  def httpProtocol(implicit configuration: GatlingConfiguration) =
+    HttpProtocolBuilder(configuration).baseURL(s"http://localhost:$mockHttpPort")
 
   private def newResponse(status: HttpResponseStatus) =
     new DefaultHttpResponse(HttpVersion.HTTP_1_1, status)
 
-  def runWithHttpServer(requestHandler: Handler)(f: HttpServer => Unit)(implicit httpEngine: HttpEngine, protocol: DefaultHttpProtocol) = {
+  def runWithHttpServer(requestHandler: Handler)(f: HttpServer => Unit) = {
     val httpServer = new HttpServer(requestHandler, mockHttpPort)
     try {
-      httpEngine.start(system, mock[DataWriters], mock[Throttler])
       f(httpServer)
     } finally {
       httpServer.stop()
@@ -67,10 +67,12 @@ abstract class HttpSpec extends AkkaSpec with BeforeAndAfter {
 
   def runScenario(sb: ScenarioBuilder,
                   timeout: FiniteDuration = 10.seconds,
-                  protocolCustomizer: HttpProtocolBuilder => HttpProtocolBuilder = identity)(implicit defaultHttpProtocol: DefaultHttpProtocol) = {
+                  protocolCustomizer: HttpProtocolBuilder => HttpProtocolBuilder = identity)(implicit configuration: GatlingConfiguration) = {
+    // FIXME should initialize with this
     val protocols = Protocols(protocolCustomizer(httpProtocol))
-    val actor = sb.build(system, self, ScenarioContext(mock[ActorRef], mock[DataWriters], mock[ActorRef], protocols, Constant, false))
-    actor ! Session("TestSession", "testUser")
+    val coreComponents = CoreComponents(mock[ActorRef], mock[Throttler], mock[StatsEngine], mock[ActorRef])
+    val actor = sb.build(system, ScenarioContext(coreComponents, Constant, throttled = false), new ProtocolComponentsRegistry(system, coreComponents, protocols), self)
+    actor ! Session("TestSession", 0)
     expectMsgClass(timeout, classOf[Session])
   }
 
@@ -121,16 +123,16 @@ abstract class HttpSpec extends AkkaSpec with BeforeAndAfter {
   }
 
   def checkCookie(cookie: String, value: String)(request: DefaultHttpRequest) = {
-    val cookies = new CookieDecoder().decode(request.headers.get(HeaderNames.Cookie)).toList
-    val matchingCookies = cookies.filter(_.getName == cookie)
+    val cookies = ServerCookieDecoder.STRICT.decode(request.headers.get(HeaderNames.Cookie)).toList
+    val matchingCookies = cookies.filter(_.name == cookie)
 
     matchingCookies match {
       case Nil =>
         throw new AssertionError(s"In request $request there were no cookies")
       case list =>
         for (cookie <- list) {
-          if (cookie.getValue != value) {
-            throw new AssertionError(s"$request: cookie '${cookie.getName}', expected: '$value' but was '${cookie.getValue}'")
+          if (cookie.value != value) {
+            throw new AssertionError(s"$request: cookie '${cookie.name}', expected: '$value' but was '${cookie.value}'")
           }
         }
     }
